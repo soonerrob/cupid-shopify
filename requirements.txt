@@ -1,0 +1,16 @@
+certifi==2024.2.2
+charset-normalizer==3.3.2
+idna==3.7
+numpy==1.26.4
+pandas==2.2.1
+pyactiveresource==2.2.2
+PyJWT==2.8.0
+python-dateutil==2.8.2
+python-dotenv==1.0.1
+pytz==2024.1
+PyYAML==6.0.1
+requests==2.31.0
+ShopifyAPI==12.4.0
+six==1.16.0
+tzdata==2024.1
+urllib3==2.2.1
