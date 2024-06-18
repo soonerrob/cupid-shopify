@@ -126,6 +126,10 @@ def log_missing_barcodes(barcode):
 
 
 def update_inventory_from_csv():
+    # Check if the CSV file exists before proceeding
+    if not os.path.exists(inventory_csv_path):
+        return  # Exit the function silently if there is no file to process
+    
     location_id = get_primary_location_id()
     if not location_id:
         print("No valid location ID available. Exiting.")
