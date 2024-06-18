@@ -14,6 +14,11 @@ shop_name = os.getenv('SHOP_NAME')
 admin_api_token = os.getenv('API_ACCESS_TOKEN')
 api_version = os.getenv('VERSION')
 inventory_csv_path = os.getenv('INVENTORY_CSV_PATH')
+processed_path = os.getenv('PROCESSED_PATH')
+
+# Ensure the processed directory exists
+if not os.path.exists(processed_path):
+    os.makedirs(processed_path)
 
 # Shopify API URL and Headers
 shop_url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}"
@@ -22,11 +27,10 @@ headers = {
     "Content-Type": "application/json"
 }
 
-# Initialize single file for missing barcodes
+# Initialize single file for missing barcodes once per run
 missing_barcodes_filename = f"missing-barcodes-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-# Create the file and open it once to ensure it exists
 with open(missing_barcodes_filename, 'w') as file:
-    file.write("Barcode\n")
+    pass  # This simply ensures the file is created empty without writing any header
 
 # Cache file paths
 inventory_cache_file = 'inventory_cache.json'
@@ -117,6 +121,7 @@ def update_inventory_level(inventory_item_id, location_id, quantity):
             f"Failed to update inventory for item {inventory_item_id}: {response.text}")
 
 
+# Function to log missing barcodes, now opening the file in append mode
 def log_missing_barcodes(barcode):
     try:
         with open(missing_barcodes_filename, 'a') as file:
@@ -126,17 +131,16 @@ def log_missing_barcodes(barcode):
 
 
 def update_inventory_from_csv():
-    # Check if the CSV file exists before proceeding
     if not os.path.exists(inventory_csv_path):
-        return  # Exit the function silently if there is no file to process
-    
+        print(f"No inventory file found at {inventory_csv_path}.")
+        return
+
     location_id = get_primary_location_id()
     if not location_id:
         print("No valid location ID available. Exiting.")
         return
 
-    inventory_data = pd.read_csv(
-        inventory_csv_path, header=None, dtype={0: str})
+    inventory_data = pd.read_csv(inventory_csv_path, header=None, dtype={0: str})
     for index, row in inventory_data.iterrows():
         barcode, quantity = row[0], int(row[1])
         inventory_item_id = find_inventory_item_id(barcode)
@@ -145,19 +149,12 @@ def update_inventory_from_csv():
         else:
             print(f"No inventory item found for barcode {barcode}")
             log_missing_barcodes(barcode)
-            
-            
-    # Define processed directory path
-    processed_dir = os.path.join(os.path.dirname(inventory_csv_path), 'processed')
-    if not os.path.exists(processed_dir):
-        os.makedirs(processed_dir)
-    
-    # Rename and move the processed file with a timestamp
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    new_filename = f"processed-{os.path.basename(inventory_csv_path).replace('.csv', '')}-{timestamp}.csv"
-    processed_path = os.path.join(processed_dir, new_filename)
-    shutil.move(inventory_csv_path, processed_path)
-    # print(f"Moved and renamed processed file to {processed_path}")
+
+    # Move processed file to a directory and rename with timestamp
+    new_filename = f"processed-{os.path.basename(inventory_csv_path).replace('.csv', '')}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+    processed_file_path = os.path.join(processed_path, new_filename)
+    shutil.move(inventory_csv_path, processed_file_path)
+    print(f"Moved and renamed processed file to {processed_file_path}")
 
 
 # First, update the cache with all product variants
