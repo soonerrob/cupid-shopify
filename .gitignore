@@ -1,5 +1,6 @@
 .env
 shopify_app_venv/
+shopify-app-venv/
 __pycache__/
 *.pyc
 *.pyo
