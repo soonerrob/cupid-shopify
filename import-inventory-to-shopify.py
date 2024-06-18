@@ -1,7 +1,9 @@
 import json
 import os
-from datetime import datetime
 import shutil
+import time
+from datetime import datetime
+
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -105,23 +107,33 @@ def find_inventory_item_id(barcode):
     return None
 
 
-def update_inventory_level(inventory_item_id, location_id, quantity):
+def update_inventory_level(inventory_item_id, location_id, quantity, retries=5, delay=2):
     url = f"{shop_url}/inventory_levels/set.json"
     payload = {
         "location_id": location_id,
         "inventory_item_id": inventory_item_id,
         "available": quantity
     }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 200:
+    for attempt in range(retries):
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            print(
+                f"Successfully updated inventory for item {inventory_item_id} at location {location_id} to {quantity}")
+            break
+        elif "Exceeded 2 calls per second" in response.text:
+            print(f"Rate limit hit, retrying in {delay} seconds...")
+            time.sleep(delay)  # Wait for the specified delay before retrying
+        else:
+            print(
+                f"Failed to update inventory for item {inventory_item_id}: {response.text}")
+            break
+    else:  # This else corresponds to the for, not the if
         print(
-            f"Successfully updated inventory for item {inventory_item_id} at location {location_id} to {quantity}")
-    else:
-        print(
-            f"Failed to update inventory for item {inventory_item_id}: {response.text}")
-
+            f"Failed after {retries} retries for item {inventory_item_id}: {response.text}")
 
 # Function to log missing barcodes, now opening the file in append mode
+
+
 def log_missing_barcodes(barcode):
     try:
         with open(missing_barcodes_filename, 'a') as file:
@@ -140,7 +152,8 @@ def update_inventory_from_csv():
         print("No valid location ID available. Exiting.")
         return
 
-    inventory_data = pd.read_csv(inventory_csv_path, header=None, dtype={0: str})
+    inventory_data = pd.read_csv(
+        inventory_csv_path, header=None, dtype={0: str})
     for index, row in inventory_data.iterrows():
         barcode, quantity = row[0], int(row[1])
         inventory_item_id = find_inventory_item_id(barcode)
