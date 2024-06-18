@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime
-
+import shutil
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -145,6 +145,19 @@ def update_inventory_from_csv():
         else:
             print(f"No inventory item found for barcode {barcode}")
             log_missing_barcodes(barcode)
+            
+            
+    # Define processed directory path
+    processed_dir = os.path.join(os.path.dirname(inventory_csv_path), 'processed')
+    if not os.path.exists(processed_dir):
+        os.makedirs(processed_dir)
+    
+    # Rename and move the processed file with a timestamp
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    new_filename = f"processed-{os.path.basename(inventory_csv_path).replace('.csv', '')}-{timestamp}.csv"
+    processed_path = os.path.join(processed_dir, new_filename)
+    shutil.move(inventory_csv_path, processed_path)
+    # print(f"Moved and renamed processed file to {processed_path}")
 
 
 # First, update the cache with all product variants

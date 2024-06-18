@@ -2,6 +2,7 @@
 shopify_app_venv/
 shopify-app-venv/
 __pycache__/
+processed/
 *.pyc
 *.pyo
 .DS_Store
