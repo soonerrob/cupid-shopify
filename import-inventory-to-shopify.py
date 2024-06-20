@@ -1,6 +1,10 @@
+import configparser
 import json
 import os
 import shutil
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import time
 from datetime import datetime
 import pandas as pd
@@ -17,6 +21,12 @@ api_version = os.getenv('VERSION')
 inventory_csv_path = os.getenv('INVENTORY_CSV_PATH')
 processed_path = os.getenv('PROCESSED_PATH')
 missing_barcodes_path = os.getenv('MISSING_BARCODE_FILES_PATH')
+
+# Load the configuration file
+config = configparser.ConfigParser()
+config.read(os.getenv("CONFIG_PATH"))
+
+EMAIL_RECIPIENTS = [email.strip() for email in config['EMAIL']['recipients'].split(',')]
 
 # Ensure the processed and missing barcode directories exist
 if not os.path.exists(processed_path):
@@ -36,6 +46,31 @@ headers = {
 # Cache file paths
 inventory_cache_file = 'inventory_cache.json'
 location_cache_file = 'location_cache.json'
+
+
+def send_email(subject, body, to_emails):
+    # Email setup
+    sender_email = os.getenv("SMTP_SENDER_EMAIL")
+    sender_password = os.getenv("SMTP_SENDER_PASSWROD")
+
+    # Set up the MIME
+    message = MIMEMultipart()
+    message["From"] = sender_email
+    message["To"] = ", ".join(to_emails)
+    message["Subject"] = subject
+    message.attach(MIMEText(body, 'plain'))
+
+    # Connect and send the email
+    try:
+        server = smtplib.SMTP(os.getenv("SMTP_SERVER"), 587)
+        server.starttls()  # Encrypts the connection
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, to_emails, message.as_string())
+        server.close()
+
+        # print("Email sent successfully")
+    except Exception as e:
+        print(f"Error sending email: {e}")
 
 
 def load_cache(file_path):
@@ -153,12 +188,14 @@ def update_inventory_level(inventory_item_id, location_id, quantity):
 
 def update_inventory_from_csv():
     if not os.path.exists(inventory_csv_path):
-        print(f"No inventory file found at {inventory_csv_path}")
+        # print(f"No inventory file found at {inventory_csv_path}")
+        # send_email("Shopify Inventory Upload Script Error", "No inventory file found at the specified path.", EMAIL_RECIPIENTS)
         return
 
     location_id = get_primary_location_id()
     if not location_id:
-        print("No valid location ID available. Exiting.")
+        # print("No valid location ID available. Exiting.")
+        # send_email("Shopify Inventory Upload Script Error", "No valid location ID available.", EMAIL_RECIPIENTS)
         return
 
     inventory_data = pd.read_csv(inventory_csv_path, header=None, dtype={0: str, 1: int})
@@ -178,11 +215,24 @@ def update_inventory_from_csv():
         missing_barcodes_filename = os.path.join(missing_barcodes_path, f"missing-barcodes-{timestamp}.csv")
         with open(missing_barcodes_filename, 'w') as file:
             file.write("\n".join(missing_barcodes) + "\n")
+        missing_barcodes_count = len(missing_barcodes)
+    else:
+        missing_barcodes_filename = "No missing barcodes were found."
+        missing_barcodes_count = 0
 
     if os.path.exists(inventory_csv_path):
         final_processed_path = os.path.join(processed_path, f"processed-{os.path.basename(inventory_csv_path)}-{timestamp}.csv")
         shutil.move(inventory_csv_path, final_processed_path)
         print(f"Moved processed file to {final_processed_path}")
+
+        subject = "Shopify Inventory File Processed"
+        body = (f"Filename: {os.path.basename(final_processed_path)} has been processed.\n\n"
+                f"Processed file: {final_processed_path}\n"
+                f"Missing barcode file: {missing_barcodes_filename}\n"
+                f"Total missing barcodes: {missing_barcodes_count}")
+        send_email(subject, body, EMAIL_RECIPIENTS)
+    else:
+        send_email("Shopify Inventory Upload Script Error", "The inventory CSV file could not be processed.", EMAIL_RECIPIENTS)
 
 
 # First, update the cache with all product variants
