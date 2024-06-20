@@ -195,15 +195,15 @@ def update_inventory_level(inventory_item_id, location_id, quantity):
 def update_inventory_from_csv():
     if not os.path.exists(inventory_csv_path):
         print(f"No inventory file found at {inventory_csv_path}")
-        send_email("Shopify Inventory Upload Script Error",
-                   "No inventory file found at the specified path.", EMAIL_RECIPIENTS)
+        # send_email("Shopify Inventory Upload Script Error",
+        #            "No inventory file found at the specified path.", EMAIL_RECIPIENTS)
         return
 
     location_id = get_primary_location_id()
     if not location_id:
         print("No valid location ID available. Exiting.")
-        send_email("Shopify Inventory Upload Script Error",
-                   "No valid location ID available.", EMAIL_RECIPIENTS)
+        # send_email("Shopify Inventory Upload Script Error",
+        #            "No valid location ID available.", EMAIL_RECIPIENTS)
         return
 
     inventory_data = pd.read_csv(
