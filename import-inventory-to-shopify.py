@@ -3,7 +3,6 @@ import os
 import shutil
 import time
 from datetime import datetime
-
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -24,15 +23,11 @@ if not os.path.exists(processed_path):
 
 # Shopify API URL and Headers
 shop_url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}"
+graphql_url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/graphql.json"
 headers = {
     "X-Shopify-Access-Token": admin_api_token,
     "Content-Type": "application/json"
 }
-
-# Initialize single file for missing barcodes once per run
-missing_barcodes_filename = f"missing-barcodes-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-with open(missing_barcodes_filename, 'w') as file:
-    pass  # This simply ensures the file is created empty without writing any header
 
 # Cache file paths
 inventory_cache_file = 'inventory_cache.json'
@@ -70,33 +65,43 @@ def get_primary_location_id():
 
 def update_inventory_cache():
     inventory_cache = load_cache(inventory_cache_file)
-    page_info = ''
+    page_info = None
     has_changes = False
 
     while True:
-        response = requests.get(
-            f"{shop_url}/products.json?limit=250&fields=id,variants&page_info={page_info}", headers=headers)
+        endpoint = f"{shop_url}/products.json?limit=250&fields=id,variants"
+        if page_info:
+            endpoint += f"&page_info={page_info}"
+
+        response = requests.get(endpoint, headers=headers)
         if response.status_code == 200:
             data = response.json()
             products = data.get('products', [])
             for product in products:
-                for variant in product.get('variants', []):
-                    barcode = variant['barcode']
-                    if barcode and barcode.strip():
-                        if barcode not in inventory_cache or inventory_cache[barcode] != variant['inventory_item_id']:
-                            inventory_cache[barcode] = variant['inventory_item_id']
-                            has_changes = True
+                for variant in product['variants']:
+                    barcode = variant.get('barcode')
+                    if barcode and barcode.strip() and (barcode not in inventory_cache or inventory_cache[barcode] != variant['id']):
+                        inventory_cache[barcode] = variant['id']
+                        has_changes = True
 
-            page_info = data.get('next', {}).get('page_info', None)
-            if not page_info:
+            # Pagination handling using link headers
+            link_header = response.headers.get('Link', None)
+            if link_header:
+                links = {rel[6:-1]: url.split('; ')[0][1:-1] for url, rel in
+                         (link.split('; ') for link in link_header.split(', '))}
+                page_info = links.get('next', None)
+                if not page_info:
+                    break
+            else:
                 break
         else:
-            print(
-                f"Failed to fetch data: {response.status_code} - {response.text}")
-            break
+            print(f"Failed to fetch data: {response.status_code} - {response.text}")
+            if response.status_code != 429:  # Avoid breaking loop on rate limit errors
+                break
 
     if has_changes:
         save_cache(inventory_cache_file, inventory_cache)
+    print("Inventory cache updated. Total barcodes cached:", len(inventory_cache))
 
 
 def find_inventory_item_id(barcode):
@@ -107,44 +112,44 @@ def find_inventory_item_id(barcode):
     return None
 
 
-def update_inventory_level(inventory_item_id, location_id, quantity, retries=5, delay=2):
-    url = f"{shop_url}/inventory_levels/set.json"
-    payload = {
-        "location_id": location_id,
-        "inventory_item_id": inventory_item_id,
-        "available": quantity
+def update_inventory_level(inventory_item_id, location_id, quantity):
+    mutation = """
+    mutation {
+      inventorySetOnHandQuantities(
+        locationId: "%s",
+        itemQuantities: {
+          id: "%s",
+          availableQuantity: %d
+        }
+      ) {
+        inventoryLevel {
+          id
+        }
+      }
     }
-    for attempt in range(retries):
-        response = requests.post(url, headers=headers, json=payload)
+    """ % (location_id, inventory_item_id, quantity)
+
+    while True:
+        response = requests.post(graphql_url, headers=headers, json={'query': mutation})
         if response.status_code == 200:
-            print(
-                f"Successfully updated inventory for item {inventory_item_id} at location {location_id} to {quantity}")
+            print(f"Successfully updated inventory for item {inventory_item_id} at location {location_id} to {quantity}")
             break
-        elif "Exceeded 2 calls per second" in response.text:
-            print(f"Rate limit hit, retrying in {delay} seconds...")
-            time.sleep(delay)  # Wait for the specified delay before retrying
+        elif response.status_code == 429:
+            retry_after = response.headers.get('Retry-After', '1')
+            try:
+                wait_time = int(float(retry_after))
+            except ValueError:
+                wait_time = 1  # Default to 1 second if there's an issue with the header value
+            print(f"Rate limit hit, retrying after {wait_time} seconds...")
+            time.sleep(wait_time)
         else:
-            print(
-                f"Failed to update inventory for item {inventory_item_id}: {response.text}")
+            print(f"Failed to update inventory for item {inventory_item_id}: {response.text}")
             break
-    else:  # This else corresponds to the for, not the if
-        print(
-            f"Failed after {retries} retries for item {inventory_item_id}: {response.text}")
-
-# Function to log missing barcodes, now opening the file in append mode
-
-
-def log_missing_barcodes(barcode):
-    try:
-        with open(missing_barcodes_filename, 'a') as file:
-            file.write(f"{barcode}\n")
-    except Exception as e:
-        print(f"Failed to log missing barcode {barcode}: {e}")
 
 
 def update_inventory_from_csv():
     if not os.path.exists(inventory_csv_path):
-        print(f"No inventory file found at {inventory_csv_path}.")
+        print(f"No inventory file found at {inventory_csv_path}")
         return
 
     location_id = get_primary_location_id()
@@ -152,22 +157,28 @@ def update_inventory_from_csv():
         print("No valid location ID available. Exiting.")
         return
 
-    inventory_data = pd.read_csv(
-        inventory_csv_path, header=None, dtype={0: str})
+    inventory_data = pd.read_csv(inventory_csv_path, header=None, dtype={0: str, 1: int})
+    missing_barcodes = []
+
     for index, row in inventory_data.iterrows():
-        barcode, quantity = row[0], int(row[1])
+        barcode, quantity = row[0], row[1]
         inventory_item_id = find_inventory_item_id(barcode)
         if inventory_item_id:
-            update_inventory_level(inventory_item_id, location_id, quantity)
-        else:
-            print(f"No inventory item found for barcode {barcode}")
-            log_missing_barcodes(barcode)
+            print(f"Updating item {barcode} with quantity {quantity}")
+            print(f"Successfully updated inventory for item {barcode} at location {location_id} to {quantity}")
 
-    # Move processed file to a directory and rename with timestamp
-    new_filename = f"processed-{os.path.basename(inventory_csv_path).replace('.csv', '')}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-    processed_file_path = os.path.join(processed_path, new_filename)
-    shutil.move(inventory_csv_path, processed_file_path)
-    print(f"Moved and renamed processed file to {processed_file_path}")
+        else:
+            missing_barcodes.append(barcode)
+
+    if missing_barcodes:
+        missing_barcodes_filename = f"missing-barcodes-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+        with open(missing_barcodes_filename, 'w') as file:
+            file.write("\n".join(missing_barcodes) + "\n")
+
+    if os.path.exists(inventory_csv_path):
+        final_processed_path = os.path.join(processed_path, f"processed-{os.path.basename(inventory_csv_path)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv")
+        shutil.move(inventory_csv_path, final_processed_path)
+        print(f"Moved processed file to {final_processed_path}")
 
 
 # First, update the cache with all product variants
