@@ -16,10 +16,14 @@ admin_api_token = os.getenv('API_ACCESS_TOKEN')
 api_version = os.getenv('VERSION')
 inventory_csv_path = os.getenv('INVENTORY_CSV_PATH')
 processed_path = os.getenv('PROCESSED_PATH')
+missing_barcodes_path = os.getenv('MISSING_BARCODE_FILES_PATH')
 
-# Ensure the processed directory exists
+# Ensure the processed and missing barcode directories exist
 if not os.path.exists(processed_path):
     os.makedirs(processed_path)
+
+if not os.path.exists(missing_barcodes_path):
+    os.makedirs(missing_barcodes_path)
 
 # Shopify API URL and Headers
 shop_url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}"
@@ -160,23 +164,23 @@ def update_inventory_from_csv():
     inventory_data = pd.read_csv(inventory_csv_path, header=None, dtype={0: str, 1: int})
     missing_barcodes = []
 
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     for index, row in inventory_data.iterrows():
         barcode, quantity = row[0], row[1]
         inventory_item_id = find_inventory_item_id(barcode)
         if inventory_item_id:
             print(f"Updating item {barcode} with quantity {quantity}")
-            print(f"Successfully updated inventory for item {barcode} at location {location_id} to {quantity}")
-
+            update_inventory_level(inventory_item_id, location_id, quantity)
         else:
             missing_barcodes.append(barcode)
 
     if missing_barcodes:
-        missing_barcodes_filename = f"missing-barcodes-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+        missing_barcodes_filename = os.path.join(missing_barcodes_path, f"missing-barcodes-{timestamp}.csv")
         with open(missing_barcodes_filename, 'w') as file:
             file.write("\n".join(missing_barcodes) + "\n")
 
     if os.path.exists(inventory_csv_path):
-        final_processed_path = os.path.join(processed_path, f"processed-{os.path.basename(inventory_csv_path)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv")
+        final_processed_path = os.path.join(processed_path, f"processed-{os.path.basename(inventory_csv_path)}-{timestamp}.csv")
         shutil.move(inventory_csv_path, final_processed_path)
         print(f"Moved processed file to {final_processed_path}")
 

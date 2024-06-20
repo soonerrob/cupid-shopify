@@ -1,6 +1,7 @@
 .env
 shopify_app_venv/
 shopify-app-venv/
+missing-barcode-files/
 __pycache__/
 processed/
 *.pyc
