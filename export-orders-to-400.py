@@ -41,7 +41,7 @@ def add_tag_to_order(order, tag):
 
 def fetch_and_export_orders():
     sixty_days_ago = (datetime.now(timezone.utc) -
-                      timedelta(days=7)).isoformat()
+                      timedelta(days=21)).isoformat()
     orders = shopify.Order.find(created_at_min=sixty_days_ago, status="any")
 
     if not orders:
@@ -74,7 +74,7 @@ def fetch_and_export_orders():
             })
 
         # Uncomment the following line to add the "Downloaded" tag
-        # add_tag_to_order(order, "Downloaded")
+        add_tag_to_order(order, "Downloaded")
 
     if orders_data:
         df = pd.DataFrame(orders_data)
