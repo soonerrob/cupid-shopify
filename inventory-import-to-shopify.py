@@ -45,6 +45,7 @@ headers = {
     "Content-Type": "application/json"
 }
 
+
 def send_email(subject, body, to_emails):
     # Email setup
     sender_email = os.getenv("SMTP_SENDER_EMAIL")
@@ -67,6 +68,7 @@ def send_email(subject, body, to_emails):
     except Exception as e:
         print(f"Error sending email: {e}")
 
+
 def get_inventory_item_id_from_barcode(barcode):
     query = """
     query ($barcode: String!) {
@@ -86,7 +88,8 @@ def get_inventory_item_id_from_barcode(barcode):
         "barcode": f"barcode:{barcode}"
     }
     response = requests.post(
-        graphql_url, headers=headers, json={'query': query, 'variables': variables}
+        graphql_url, headers=headers, json={
+            'query': query, 'variables': variables}
     )
     if response.status_code == 200:
         response_data = response.json()
@@ -95,6 +98,7 @@ def get_inventory_item_id_from_barcode(barcode):
             return edges[0]['node']['inventoryItem']['id']
     print(f"Failed to find product with barcode: {barcode}")
     return None
+
 
 def update_inventory_level(inventory_item_id, location_id, new_quantity):
     mutation = """
@@ -114,10 +118,12 @@ def update_inventory_level(inventory_item_id, location_id, new_quantity):
     }
     while True:
         response = requests.post(
-            graphql_url, headers=headers, json={'query': mutation, 'variables': variables}
+            graphql_url, headers=headers, json={
+                'query': mutation, 'variables': variables}
         )
         if response.status_code == 200:
-            print(f"Successfully updated inventory for item {inventory_item_id} to {new_quantity}")
+            print(
+                f"Successfully updated inventory for item {inventory_item_id} to {new_quantity}")
             break
         elif response.status_code == 429:
             retry_after = response.headers.get('Retry-After', '1')
@@ -128,8 +134,10 @@ def update_inventory_level(inventory_item_id, location_id, new_quantity):
             print(f"Rate limit hit, retrying after {wait_time} seconds...")
             time.sleep(wait_time)
         else:
-            print(f"Failed to update inventory for item {inventory_item_id}: {response.text}")
+            print(
+                f"Failed to update inventory for item {inventory_item_id}: {response.text}")
             break
+
 
 def update_inventory_from_csv(csv_path):
     if not os.path.exists(csv_path):
@@ -150,7 +158,8 @@ def update_inventory_from_csv(csv_path):
             inventory_item_id = get_inventory_item_id_from_barcode(barcode)
             if inventory_item_id:
                 print(f"Updating item {barcode} with quantity {quantity}")
-                update_inventory_level(inventory_item_id, location_id, quantity)
+                update_inventory_level(
+                    inventory_item_id, location_id, quantity)
             else:
                 missing_barcodes.append(barcode)
 
@@ -180,6 +189,7 @@ def update_inventory_from_csv(csv_path):
         print(f"An error occurred: {e}")
         send_email("Shopify Inventory Upload Script Error",
                    "An error occurred during the inventory update process.", EMAIL_RECIPIENTS)
+
 
 # Run the inventory update
 update_inventory_from_csv(inventory_csv_path)
