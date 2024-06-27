@@ -96,7 +96,7 @@ def get_inventory_item_id_from_barcode(barcode):
         edges = response_data['data']['productVariants']['edges']
         if edges:
             return edges[0]['node']['inventoryItem']['id']
-    print(f"Failed to find product with barcode: {barcode}")
+    # print(f"Failed to find product with barcode: {barcode}")
     return None
 
 
@@ -122,8 +122,8 @@ def update_inventory_level(inventory_item_id, location_id, new_quantity):
                 'query': mutation, 'variables': variables}
         )
         if response.status_code == 200:
-            print(
-                f"Successfully updated inventory for item {inventory_item_id} to {new_quantity}")
+            # print(
+            #     f"Successfully updated inventory for item {inventory_item_id} to {new_quantity}")
             break
         elif response.status_code == 429:
             retry_after = response.headers.get('Retry-After', '1')
@@ -131,19 +131,19 @@ def update_inventory_level(inventory_item_id, location_id, new_quantity):
                 wait_time = int(float(retry_after))
             except ValueError:
                 wait_time = 1  # Default to 1 second if there's an issue with the header value
-            print(f"Rate limit hit, retrying after {wait_time} seconds...")
+            # print(f"Rate limit hit, retrying after {wait_time} seconds...")
             time.sleep(wait_time)
         else:
-            print(
-                f"Failed to update inventory for item {inventory_item_id}: {response.text}")
+            # print(
+            #     f"Failed to update inventory for item {inventory_item_id}: {response.text}")
             break
 
 
 def update_inventory_from_csv(csv_path):
     if not os.path.exists(csv_path):
-        print(f"No inventory file found at {csv_path}")
-        send_email("Shopify Inventory Upload Script Error",
-                   "No inventory file found at the specified path.", EMAIL_RECIPIENTS)
+        # print(f"No inventory file found at {csv_path}")
+        # send_email("Shopify Inventory Upload Script Error",
+        #            "No inventory file found at the specified path.", EMAIL_RECIPIENTS)
         return
 
     inventory_data = pd.read_csv(csv_path, header=None, dtype={0: str, 1: int})
@@ -157,7 +157,7 @@ def update_inventory_from_csv(csv_path):
             barcode, quantity = row[0], row[1]
             inventory_item_id = get_inventory_item_id_from_barcode(barcode)
             if inventory_item_id:
-                print(f"Updating item {barcode} with quantity {quantity}")
+                # print(f"Updating item {barcode} with quantity {quantity}")
                 update_inventory_level(
                     inventory_item_id, location_id, quantity)
             else:
@@ -175,7 +175,7 @@ def update_inventory_from_csv(csv_path):
 
         if os.path.exists(csv_path):
             shutil.move(csv_path, final_processed_path)
-            print(f"Moved processed file to {final_processed_path}")
+            # print(f"Moved processed file to {final_processed_path}")
 
             subject = "Shopify Inventory File Processed"
             body = (f"Filename: {os.path.basename(final_processed_path)} has been processed.\n\n"
