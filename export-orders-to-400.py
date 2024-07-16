@@ -1,10 +1,12 @@
 import os
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 import pandas as pd
 import shopify
 from dateutil.parser import parse
 from dotenv import load_dotenv
+from smb.SMBConnection import SMBConnection
 
 # Load environment variables
 load_dotenv()
@@ -14,8 +16,12 @@ shop_name = os.getenv('SHOP_NAME')  # The unique name of your Shopify store
 # Your Shopify Admin API access token
 admin_api_token = os.getenv('API_ACCESS_TOKEN')
 
-# Path where the CSV file will be saved
-EXPORT_PATH = os.getenv('EXPORT_PATH')
+# Directory where the CSV file will be saved
+EXPORT_DIR = "export-orders-to-400-archive"
+
+# Ensure the export directory exists
+if not os.path.exists(EXPORT_DIR):
+    os.makedirs(EXPORT_DIR)
 
 # Configure the Shopify API session
 api_version = os.getenv('EXPORT_ORDER_API_VERSION')
@@ -24,6 +30,12 @@ shopify.ShopifyResource.set_site(shop_url)
 shopify.ShopifyResource.activate_session(shopify.Session(
     f"{shop_name}.myshopify.com", api_version, admin_api_token))
 
+# SMB connection configuration
+SERVER_NAME = os.getenv("IBM_SERVER_NAME")
+SHARE_NAME = os.getenv("IBM_SHARE_NAME")
+USERNAME = os.getenv("IBM_USERNAME")
+PASSWORD = os.getenv("IBM_PASSWORD")
+DOMAIN = ''
 
 def add_tag_to_order(order, tag):
     """
@@ -38,6 +50,17 @@ def add_tag_to_order(order, tag):
         order.tags += f", {tag}"  # Append the tag to the existing tags
         order.save()  # Save the order with the new tag
 
+def save_to_smb(file_content, server_name, share_name, smb_path, filename, username, password, domain=''):
+    conn = SMBConnection(username, password, "client_machine", server_name, domain=domain, use_ntlm_v2=True, is_direct_tcp=True)
+    
+    if not conn.connect(server_name, 445):
+        raise ConnectionError(f"Unable to connect to the server: {server_name}")
+
+    # Using BytesIO to create a file-like object in memory and then upload it to the SMB share
+    with BytesIO(file_content.encode('utf-8')) as file:
+        conn.storeFile(share_name, os.path.join(smb_path, filename), file)
+    
+    print(f"Report saved as: {filename}")
 
 def fetch_and_export_orders():
     sixty_days_ago = (datetime.now(timezone.utc) -
@@ -78,10 +101,21 @@ def fetch_and_export_orders():
 
     if orders_data:
         df = pd.DataFrame(orders_data)
-        df.to_csv(EXPORT_PATH, index=False, header=False)
-        print(f"Orders exported successfully to {EXPORT_PATH}")
+        csv_content = df.to_csv(index=False, header=False)
+        
+        # Generate a timestamped filename for the local path
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        local_filename = f"ciword-{timestamp}.csv"
+        local_export_path = os.path.join(EXPORT_DIR, local_filename)
+        
+        # Save to local path with timestamped filename
+        df.to_csv(local_export_path, index=False, header=False)
+        print(f"Orders exported successfully to {local_export_path}")
+
+        # Save to SMB with static filename
+        smb_filename = "ciword.csv"
+        save_to_smb(csv_content, SERVER_NAME, SHARE_NAME, '', smb_filename, USERNAME, PASSWORD, DOMAIN)
     else:
         print("No new orders to export.")
-
 
 fetch_and_export_orders()
