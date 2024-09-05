@@ -17,7 +17,7 @@ shop_name = os.getenv('SHOP_NAME')  # The unique name of your Shopify store
 admin_api_token = os.getenv('API_ACCESS_TOKEN')
 
 # Directory where the CSV file will be saved
-EXPORT_DIR = "export-orders-to-400-archive"
+EXPORT_DIR = "export-picking-to-400-archive"
 
 # Ensure the export directory exists
 if not os.path.exists(EXPORT_DIR):
@@ -36,6 +36,9 @@ SHARE_NAME = os.getenv("IBM_SHARE_NAME")
 USERNAME = os.getenv("IBM_USERNAME")
 PASSWORD = os.getenv("IBM_PASSWORD")
 DOMAIN = ''
+
+# Global variables
+ENABLE_TAGGING = False 
 
 def add_tag_to_order(order, tag):
     """
@@ -63,8 +66,7 @@ def save_to_smb(file_content, server_name, share_name, smb_path, filename, usern
     print(f"Report saved as: {filename}")
 
 def fetch_and_export_orders():
-    sixty_days_ago = (datetime.now(timezone.utc) -
-                      timedelta(days=21)).isoformat()
+    sixty_days_ago = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
     orders = shopify.Order.find(created_at_min=sixty_days_ago, status="any")
 
     if not orders:
@@ -73,9 +75,14 @@ def fetch_and_export_orders():
 
     orders_data = []
     for order in orders:
-        if order.cancelled_at is not None or order.financial_status != "paid":
+        print(f"Checking order: {order.id}")
+        print(f"Financial Status: {order.financial_status}, Fulfillment Status: {order.fulfillment_status}, Cancelled At: {order.cancelled_at}")
+
+        if order.cancelled_at is not None or (order.financial_status and order.financial_status.lower() != "paid") or (order.fulfillment_status and order.fulfillment_status.lower() != "unfulfilled"):
+            print(f"Skipping order: {order.id} due to status")
             continue
-        if "Downloaded" in order.tags:
+        if "Picking" in order.tags:
+            print(f"Skipping order: {order.id} due to existing 'Picking' tag")
             continue
 
         for item in order.line_items:
@@ -96,8 +103,8 @@ def fetch_and_export_orders():
                 'Order Date': order_date,
             })
 
-        # Uncomment the following line to add the "Downloaded" tag
-        add_tag_to_order(order, "Downloaded")
+        if ENABLE_TAGGING:
+            add_tag_to_order(order, "Picking")
 
     if orders_data:
         df = pd.DataFrame(orders_data)

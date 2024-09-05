@@ -1,53 +1,157 @@
-import configparser
-import json
+import csv
 import os
-import shutil
-import smtplib
-import time
+import requests
 from datetime import datetime
+import configparser
+import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
-import pandas as pd
-import requests
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
-# Retrieve essential information from environment variables
-shop_name = os.getenv('SHOP_NAME')
-admin_api_token = os.getenv('API_ACCESS_TOKEN')
-api_version = os.getenv('VERSION')
-inventory_csv_path = os.getenv('INVENTORY_CSV_PATH')
-processed_path = os.getenv('PROCESSED_PATH')
-missing_barcodes_path = os.getenv('MISSING_BARCODE_FILES_PATH')
-location_id = os.getenv('LOCATION_ID')
-
-# Load the configuration file
+# Read configuration
 config = configparser.ConfigParser()
 config.read(os.getenv("CONFIG_PATH"))
 
-EMAIL_RECIPIENTS = [email.strip()
-                    for email in config['EMAIL']['recipients'].split(',')]
+EMAIL_RECIPIENTS = [email.strip() for email in config['EMAIL']['recipients'].split(',')]
 
-# Ensure the processed and missing barcode directories exist
-if not os.path.exists(processed_path):
-    os.makedirs(processed_path)
+inventory_csv_path = os.getenv('INVENTORY_CSV_PATH')
+processed_path = os.getenv('PROCESSED_PATH')
+missing_barcodes_path = os.getenv('MISSING_BARCODE_FILES_PATH')
 
-if not os.path.exists(missing_barcodes_path):
-    os.makedirs(missing_barcodes_path)
+# Shopify API credentials
+API_ACCESS_TOKEN = os.getenv('API_ACCESS_TOKEN')
+SHOP_NAME = os.getenv('SHOP_NAME')
+GRAPHQL_ENDPOINT = f'https://{SHOP_NAME}.myshopify.com/admin/api/2024-07/graphql.json'
+LOCATION_ID = 'gid://shopify/Location/80616161595' 
 
-# Shopify GraphQL API URL and Headers
-graphql_url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/graphql.json"
-headers = {
-    "X-Shopify-Access-Token": admin_api_token,
-    "Content-Type": "application/json"
+# Headers for the Shopify API request
+HEADERS = {
+    'Content-Type': 'application/json',
+    'X-Shopify-Access-Token': API_ACCESS_TOKEN
 }
 
+# GraphQL query to get inventory item ID by UPC
+QUERY = '''
+query ($upc: String!) {
+  productVariants(first: 10, query: $upc) {
+    edges {
+      node {
+        inventoryItem {
+          id
+        }
+      }
+    }
+  }
+}
+'''
+
+# GraphQL mutation to set inventory on-hand quantities
+MUTATION = '''
+mutation inventorySetOnHandQuantities($input: InventorySetOnHandQuantitiesInput!) {
+  inventorySetOnHandQuantities(input: $input) {
+    userErrors {
+      field
+      message
+    }
+    inventoryAdjustmentGroup {
+      createdAt
+      reason
+      referenceDocumentUri
+      changes {
+        name
+        delta
+      }
+    }
+  }
+}
+'''
+
+def get_inventory_item_id(upc):
+    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={'query': QUERY, 'variables': {'upc': upc}})
+    if response.status_code != 200:
+        print(f"Error fetching inventory item ID for UPC {upc}: HTTP {response.status_code}")
+        return None
+
+    data = response.json()
+    edges = data.get('data', {}).get('productVariants', {}).get('edges', [])
+    if edges:
+        return edges[0].get('node', {}).get('inventoryItem', {}).get('id')
+    else:
+        print(f"No inventory item found for UPC: {upc}")
+        return None
+
+def update_inventory(upc, quantity):
+    inventory_item_id = get_inventory_item_id(upc)
+    if not inventory_item_id:
+        print(f"Unable to find inventory item ID for UPC {upc}. Skipping update.")
+        missing_barcodes.append(upc)
+        return
+
+    query = {
+        "input": {
+            "reason": "correction",
+            "referenceDocumentUri": f"logistics://update/{upc}",
+            "setQuantities": [
+                {
+                    "inventoryItemId": inventory_item_id,
+                    "locationId": LOCATION_ID,
+                    "quantity": quantity
+                }
+            ]
+        }
+    }
+
+    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={'query': MUTATION, 'variables': query})
+    if response.status_code != 200:
+        print(f"Error updating inventory for UPC {upc}: HTTP {response.status_code}")
+        return
+
+    data = response.json()
+    inventory_set = data.get('data', {}).get('inventorySetOnHandQuantities', {})
+    user_errors = inventory_set.get('userErrors', [])
+    if user_errors:
+        for error in user_errors:
+            print(f"Error updating inventory for UPC {upc}: {error['message']}")
+    else:
+        adjustment_group = inventory_set.get('inventoryAdjustmentGroup', {})
+        if adjustment_group:
+            print(f"Updated inventory for UPC {upc}:")
+            print(f"  Reason: {adjustment_group.get('reason')}")
+            print(f"  Reference Document URI: {adjustment_group.get('referenceDocumentUri')}")
+            for change in adjustment_group.get('changes', []):
+                print(f"  Change: {change.get('name')}, Delta: {change.get('delta')}")
+        else:
+            print(f"No adjustment group found in the response for UPC {upc}.")
+
+def save_missing_barcodes():
+    now = datetime.now()
+    timestamp = now.strftime('%Y-%m-%d-%H-%M-%S')
+    os.makedirs(missing_barcodes_path, exist_ok=True)
+    file_path = os.path.join(missing_barcodes_path, f'missing-barcodes-{timestamp}.csv')
+
+    with open(file_path, 'w', newline='') as file:
+        writer = csv.writer(file)
+        for upc in missing_barcodes:
+            writer.writerow([upc])
+
+    print(f"Missing barcodes saved to {file_path}")
+    return file_path
+
+def move_and_rename_csv():
+    now = datetime.now()
+    timestamp = now.strftime('%Y-%m-%d-%H-%M-%S')
+    os.makedirs(processed_path, exist_ok=True)
+    new_file_name = f'ciwdsvcp-{timestamp}.csv'
+    new_file_path = os.path.join(processed_path, new_file_name)
+    os.rename(inventory_csv_path, new_file_path)
+
+    print(f"CSV file moved and renamed to {new_file_path}")
+    return new_file_path
 
 def send_email(subject, body, to_emails):
-    # Email setup
     sender_email = os.getenv("SMTP_SENDER_EMAIL")
     sender_password = os.getenv("SMTP_SENDER_PASSWROD")
 
@@ -68,128 +172,39 @@ def send_email(subject, body, to_emails):
     except Exception as e:
         print(f"Error sending email: {e}")
 
-
-def get_inventory_item_id_from_barcode(barcode):
-    query = """
-    query ($barcode: String!) {
-      productVariants(first: 1, query: $barcode) {
-        edges {
-          node {
-            id
-            inventoryItem {
-              id
-            }
-          }
-        }
-      }
-    }
-    """
-    variables = {
-        "barcode": f"barcode:{barcode}"
-    }
-    response = requests.post(
-        graphql_url, headers=headers, json={
-            'query': query, 'variables': variables}
-    )
-    if response.status_code == 200:
-        response_data = response.json()
-        edges = response_data['data']['productVariants']['edges']
-        if edges:
-            return edges[0]['node']['inventoryItem']['id']
-    # print(f"Failed to find product with barcode: {barcode}")
-    return None
-
-
-def update_inventory_level(inventory_item_id, location_id, new_quantity):
-    mutation = """
-    mutation ($inventoryItemId: ID!, $locationId: ID!, $availableQuantity: Int!) {
-      inventoryAdjustQuantity(input: {inventoryItemId: $inventoryItemId, availableQuantity: $availableQuantity, locationId: $locationId}) {
-        inventoryLevel {
-          id
-          available
-        }
-      }
-    }
-    """
-    variables = {
-        "inventoryItemId": inventory_item_id,
-        "locationId": location_id,
-        "availableQuantity": new_quantity
-    }
-    while True:
-        response = requests.post(
-            graphql_url, headers=headers, json={
-                'query': mutation, 'variables': variables}
-        )
-        if response.status_code == 200:
-            # print(
-            #     f"Successfully updated inventory for item {inventory_item_id} to {new_quantity}")
-            break
-        elif response.status_code == 429:
-            retry_after = response.headers.get('Retry-After', '1')
-            try:
-                wait_time = int(float(retry_after))
-            except ValueError:
-                wait_time = 1  # Default to 1 second if there's an issue with the header value
-            # print(f"Rate limit hit, retrying after {wait_time} seconds...")
-            time.sleep(wait_time)
-        else:
-            # print(
-            #     f"Failed to update inventory for item {inventory_item_id}: {response.text}")
-            break
-
-
-def update_inventory_from_csv(csv_path):
-    if not os.path.exists(csv_path):
-        # print(f"No inventory file found at {csv_path}")
-        # send_email("Shopify Inventory Upload Script Error",
-        #            "No inventory file found at the specified path.", EMAIL_RECIPIENTS)
-        return
-
-    inventory_data = pd.read_csv(csv_path, header=None, dtype={0: str, 1: int})
+def main():
+    global missing_barcodes
     missing_barcodes = []
 
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    final_processed_path = os.path.join(
-        processed_path, f"processed-{os.path.basename(csv_path)}-{timestamp}.csv")
-    try:
-        for index, row in inventory_data.iterrows():
-            barcode, quantity = row[0], row[1]
-            inventory_item_id = get_inventory_item_id_from_barcode(barcode)
-            if inventory_item_id:
-                # print(f"Updating item {barcode} with quantity {quantity}")
-                update_inventory_level(
-                    inventory_item_id, location_id, quantity)
+    with open(inventory_csv_path, 'r') as csvfile:
+        reader = csv.reader(csvfile)
+        for row in reader:
+            if len(row) >= 2:  # Ensure there are at least 2 columns
+                upc = row[0].strip()
+                try:
+                    quantity = int(row[1].strip())
+                    update_inventory(upc, quantity)
+                except ValueError:
+                    print(f"Invalid quantity '{row[1]}' for UPC {upc}. Skipping.")
             else:
-                missing_barcodes.append(barcode)
+                print("Invalid row in CSV, skipping.")
 
-        if missing_barcodes:
-            missing_barcodes_filename = os.path.join(
-                missing_barcodes_path, f"missing-barcodes-{timestamp}.csv")
-            with open(missing_barcodes_filename, 'w') as file:
-                file.write("\n".join(missing_barcodes) + "\n")
-            missing_barcodes_count = len(missing_barcodes)
-        else:
-            missing_barcodes_filename = "No missing barcodes were found."
-            missing_barcodes_count = 0
+    missing_barcodes_filename = None
+    if missing_barcodes:
+        missing_barcodes_filename = save_missing_barcodes()
 
-        if os.path.exists(csv_path):
-            shutil.move(csv_path, final_processed_path)
-            # print(f"Moved processed file to {final_processed_path}")
+    final_processed_path = move_and_rename_csv()
 
-            subject = "Shopify Inventory File Processed"
-            body = (f"Filename: {os.path.basename(final_processed_path)} has been processed.\n\n"
-                    f"Processed file: {os.path.basename(final_processed_path)}\n"
-                    f"Missing barcode file: {os.path.basename(missing_barcodes_filename)}\n"
-                    f"Total missing barcodes: {missing_barcodes_count}\n")
-            if missing_barcodes_count > 0:
-                body += "Missing barcodes:\n" + "\n".join(missing_barcodes)
-            send_email(subject, body, EMAIL_RECIPIENTS)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        send_email("Shopify Inventory Upload Script Error",
-                   "An error occurred during the inventory update process.", EMAIL_RECIPIENTS)
+    if missing_barcodes_filename:
+        missing_barcodes_count = len(missing_barcodes)
+        subject = "Shopify Inventory File Processed"
+        body = (f"Filename: {os.path.basename(final_processed_path)} has been processed.\n\n"
+                f"Processed file: {os.path.basename(final_processed_path)}\n"
+                f"Missing barcode file: {os.path.basename(missing_barcodes_filename)}\n"
+                f"Total missing barcodes: {missing_barcodes_count}\n")
+        if missing_barcodes_count > 0:
+            body += "Missing barcodes:\n" + "\n".join(missing_barcodes)
+        send_email(subject, body, EMAIL_RECIPIENTS)
 
-
-# Run the inventory update
-update_inventory_from_csv(inventory_csv_path)
+if __name__ == "__main__":
+    main()

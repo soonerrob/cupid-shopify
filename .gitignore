@@ -2,6 +2,11 @@
 shopify_app_venv/
 shopify-app-venv/
 missing-barcode-files/
+cupid-shopify-data-analysis/
+
+
+
+
 __pycache__/
 processed/
 *.pyc
@@ -177,3 +182,6 @@ cython_debug/
 #.idea/
 config.ini
 old code.py
+import-inventory-to-shopify-old.py
+find-shipping-events.py
+transactions-test.py
