@@ -1,11 +1,13 @@
+import configparser
 import csv
 import os
-import requests
-from datetime import datetime
-import configparser
 import smtplib
+import sys
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import requests
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -15,7 +17,9 @@ load_dotenv()
 config = configparser.ConfigParser()
 config.read(os.getenv("CONFIG_PATH"))
 
-EMAIL_RECIPIENTS = [email.strip() for email in config['EMAIL']['recipients'].split(',')]
+
+EMAIL_RECIPIENTS = [email.strip()
+                    for email in config['EMAIL']['recipients'].split(',')]
 
 inventory_csv_path = os.getenv('INVENTORY_CSV_PATH')
 processed_path = os.getenv('PROCESSED_PATH')
@@ -25,7 +29,8 @@ missing_barcodes_path = os.getenv('MISSING_BARCODE_FILES_PATH')
 API_ACCESS_TOKEN = os.getenv('API_ACCESS_TOKEN')
 SHOP_NAME = os.getenv('SHOP_NAME')
 GRAPHQL_ENDPOINT = f'https://{SHOP_NAME}.myshopify.com/admin/api/2024-07/graphql.json'
-LOCATION_ID = 'gid://shopify/Location/80616161595' 
+LOCATION_ID = 'gid://shopify/Location/80616161595'
+LOCKFILE = '/tmp/inventory_update.lock'
 
 # Headers for the Shopify API request
 HEADERS = {
@@ -69,10 +74,27 @@ mutation inventorySetOnHandQuantities($input: InventorySetOnHandQuantitiesInput!
 }
 '''
 
+
+def create_lock_file():
+    if os.path.exists(LOCKFILE):
+        print("Another instance is running. Exiting...")
+        sys.exit()
+    else:
+        with open(LOCKFILE, 'w') as lock_file:
+            lock_file.write(str(os.getpid()))
+
+
+def remove_lock_file():
+    if os.path.exists(LOCKFILE):
+        os.remove(LOCKFILE)
+
+
 def get_inventory_item_id(upc):
-    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={'query': QUERY, 'variables': {'upc': upc}})
+    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={
+                             'query': QUERY, 'variables': {'upc': upc}})
     if response.status_code != 200:
-        print(f"Error fetching inventory item ID for UPC {upc}: HTTP {response.status_code}")
+        print(
+            f"Error fetching inventory item ID for UPC {upc}: HTTP {response.status_code}")
         return None
 
     data = response.json()
@@ -83,10 +105,12 @@ def get_inventory_item_id(upc):
         print(f"No inventory item found for UPC: {upc}")
         return None
 
+
 def update_inventory(upc, quantity):
     inventory_item_id = get_inventory_item_id(upc)
     if not inventory_item_id:
-        print(f"Unable to find inventory item ID for UPC {upc}. Skipping update.")
+        print(
+            f"Unable to find inventory item ID for UPC {upc}. Skipping update.")
         missing_barcodes.append(upc)
         return
 
@@ -104,33 +128,41 @@ def update_inventory(upc, quantity):
         }
     }
 
-    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={'query': MUTATION, 'variables': query})
+    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={
+                             'query': MUTATION, 'variables': query})
     if response.status_code != 200:
-        print(f"Error updating inventory for UPC {upc}: HTTP {response.status_code}")
+        print(
+            f"Error updating inventory for UPC {upc}: HTTP {response.status_code}")
         return
 
     data = response.json()
-    inventory_set = data.get('data', {}).get('inventorySetOnHandQuantities', {})
+    inventory_set = data.get('data', {}).get(
+        'inventorySetOnHandQuantities', {})
     user_errors = inventory_set.get('userErrors', [])
     if user_errors:
         for error in user_errors:
-            print(f"Error updating inventory for UPC {upc}: {error['message']}")
+            print(
+                f"Error updating inventory for UPC {upc}: {error['message']}")
     else:
         adjustment_group = inventory_set.get('inventoryAdjustmentGroup', {})
         if adjustment_group:
             print(f"Updated inventory for UPC {upc}:")
             print(f"  Reason: {adjustment_group.get('reason')}")
-            print(f"  Reference Document URI: {adjustment_group.get('referenceDocumentUri')}")
+            print(
+                f"  Reference Document URI: {adjustment_group.get('referenceDocumentUri')}")
             for change in adjustment_group.get('changes', []):
-                print(f"  Change: {change.get('name')}, Delta: {change.get('delta')}")
+                print(
+                    f"  Change: {change.get('name')}, Delta: {change.get('delta')}")
         else:
             print(f"No adjustment group found in the response for UPC {upc}.")
+
 
 def save_missing_barcodes():
     now = datetime.now()
     timestamp = now.strftime('%Y-%m-%d-%H-%M-%S')
     os.makedirs(missing_barcodes_path, exist_ok=True)
-    file_path = os.path.join(missing_barcodes_path, f'missing-barcodes-{timestamp}.csv')
+    file_path = os.path.join(missing_barcodes_path,
+                             f'missing-barcodes-{timestamp}.csv')
 
     with open(file_path, 'w', newline='') as file:
         writer = csv.writer(file)
@@ -139,6 +171,7 @@ def save_missing_barcodes():
 
     print(f"Missing barcodes saved to {file_path}")
     return file_path
+
 
 def move_and_rename_csv():
     now = datetime.now()
@@ -150,6 +183,7 @@ def move_and_rename_csv():
 
     print(f"CSV file moved and renamed to {new_file_path}")
     return new_file_path
+
 
 def send_email(subject, body, to_emails):
     sender_email = os.getenv("SMTP_SENDER_EMAIL")
@@ -172,39 +206,46 @@ def send_email(subject, body, to_emails):
     except Exception as e:
         print(f"Error sending email: {e}")
 
+
 def main():
-    global missing_barcodes
-    missing_barcodes = []
+    create_lock_file()
+    try:
+        global missing_barcodes
+        missing_barcodes = []
 
-    with open(inventory_csv_path, 'r') as csvfile:
-        reader = csv.reader(csvfile)
-        for row in reader:
-            if len(row) >= 2:  # Ensure there are at least 2 columns
-                upc = row[0].strip()
-                try:
-                    quantity = int(row[1].strip())
-                    update_inventory(upc, quantity)
-                except ValueError:
-                    print(f"Invalid quantity '{row[1]}' for UPC {upc}. Skipping.")
-            else:
-                print("Invalid row in CSV, skipping.")
+        with open(inventory_csv_path, 'r') as csvfile:
+            reader = csv.reader(csvfile)
+            for row in reader:
+                if len(row) >= 2:  # Ensure there are at least 2 columns
+                    upc = row[0].strip()
+                    try:
+                        quantity = int(row[1].strip())
+                        update_inventory(upc, quantity)
+                    except ValueError:
+                        print(
+                            f"Invalid quantity '{row[1]}' for UPC {upc}. Skipping.")
+                else:
+                    print("Invalid row in CSV, skipping.")
 
-    missing_barcodes_filename = None
-    if missing_barcodes:
-        missing_barcodes_filename = save_missing_barcodes()
+        missing_barcodes_filename = None
+        if missing_barcodes:
+            missing_barcodes_filename = save_missing_barcodes()
 
-    final_processed_path = move_and_rename_csv()
+        final_processed_path = move_and_rename_csv()
 
-    if missing_barcodes_filename:
-        missing_barcodes_count = len(missing_barcodes)
-        subject = "Shopify Inventory File Processed"
-        body = (f"Filename: {os.path.basename(final_processed_path)} has been processed.\n\n"
-                f"Processed file: {os.path.basename(final_processed_path)}\n"
-                f"Missing barcode file: {os.path.basename(missing_barcodes_filename)}\n"
-                f"Total missing barcodes: {missing_barcodes_count}\n")
-        if missing_barcodes_count > 0:
-            body += "Missing barcodes:\n" + "\n".join(missing_barcodes)
-        send_email(subject, body, EMAIL_RECIPIENTS)
+        if missing_barcodes_filename:
+            missing_barcodes_count = len(missing_barcodes)
+            subject = "Shopify Inventory File Processed"
+            body = (f"Filename: {os.path.basename(final_processed_path)} has been processed.\n\n"
+                    f"Processed file: {os.path.basename(final_processed_path)}\n"
+                    f"Missing barcode file: {os.path.basename(missing_barcodes_filename)}\n"
+                    f"Total missing barcodes: {missing_barcodes_count}\n")
+            if missing_barcodes_count > 0:
+                body += "Missing barcodes:\n" + "\n".join(missing_barcodes)
+            send_email(subject, body, EMAIL_RECIPIENTS)
+    finally:
+        remove_lock_file()
+
 
 if __name__ == "__main__":
     main()

@@ -39,6 +39,9 @@ POPULATE_TOTALS_ON_FIRST_ROW_ONLY = True
 ENABLE_TAGGING = True  # Control tagging functionality
 SMB_FILENAME = "CupidWebSales.csv"  # Global filename
 ORDER_TAG = "Invoicing"  # Global tag for invoicing
+DAYS_TO_GO_BACK = 6  # Global variable to set the number of days to go back
+ENABLE_PADDING = True  # Enable or disable padding up to 25KB
+PADDING_CHARACTER = ' '  # Character to use for padding
 
 
 def add_tag_to_order(order, tag):
@@ -56,12 +59,14 @@ def save_to_smb(file_content, server_name, share_name, smb_filename, username, p
             f"Unable to connect to the server: {server_name}")
 
     try:
-        # Pad content to ensure at least 25KB size
-        file_size = len(file_content.encode('utf-8'))
-        min_size = 25 * 1024  # 25KB
-        if file_size < min_size:
-            padding_size = min_size - file_size
-            file_content += ' ' * padding_size  # Adding space characters as padding
+        # Only add padding if ENABLE_PADDING is True
+        if ENABLE_PADDING:
+            file_size = len(file_content.encode('utf-8'))
+            min_size = 25 * 1024  # 25KB
+            if file_size < min_size:
+                padding_size = min_size - file_size
+                # Add the specified padding character
+                file_content += PADDING_CHARACTER * padding_size
 
         # Write content to a file using pysmb
         with BytesIO(file_content.encode('utf-8')) as file:
@@ -75,76 +80,106 @@ def save_to_smb(file_content, server_name, share_name, smb_filename, username, p
 
 
 def fetch_and_export_orders():
-    sixty_days_ago = (datetime.now(timezone.utc) -
-                      timedelta(days=6)).isoformat()
-    orders = shopify.Order.find(created_at_min=sixty_days_ago, status="any")
-
-    if not orders:
-        print("No orders found within the specified time range.")
-        return
+    # Using the global DAYS_TO_GO_BACK to calculate the date to go back
+    start_date = (datetime.now(timezone.utc) -
+                  timedelta(days=DAYS_TO_GO_BACK)).isoformat()
 
     orders_data = []
-    for order in orders:
-        # Only proceed if order is 'paid' and 'unfulfilled'
-        if order.cancelled_at is not None or (order.financial_status and order.financial_status.lower() != "paid") or (order.fulfillment_status and order.fulfillment_status.lower() != "unfulfilled"):
-            continue
-        if ORDER_TAG in order.tags:  # Use the global invoicing tag variable
-            continue
+    next_page_url = None
 
-        first_row = True
-        for item in order.line_items:
-            order_date = parse(order.created_at).strftime("%Y-%m-%d")
-            barcode = "Unavailable"
-            line_item_tax = 0.0
-            vat_amount = 0.0
-            vat_rate = 0.0
+    while True:
+        if next_page_url:
+            # Continue fetching from the next page
+            orders = shopify.Order.find(from_=next_page_url)
+        else:
+            # Fetch the first page of orders
+            orders = shopify.Order.find(
+                created_at_min=start_date, status="any", limit=50)
 
-            try:
-                variant = shopify.Variant.find(item.variant_id)
-                if variant:
-                    barcode = getattr(variant, 'barcode', "Unavailable")
-            except Exception as e:
-                print(f"Failed to fetch variant for line item: {e}")
+        if not orders:
+            print("No more orders found within the specified time range.")
+            break
 
-            for tax_line in item.tax_lines:
-                line_item_tax += float(tax_line.price)
-                if tax_line.title.lower() == 'vat':
-                    vat_amount += float(tax_line.price)
-                    vat_rate = tax_line.rate
+        for order in orders:
+            # Only proceed if the order is 'paid' and 'unfulfilled'
+            # if order.cancelled_at is not None or (order.financial_status and order.financial_status.lower() != "paid"):
+            if order.cancelled_at is not None or (order.financial_status and order.financial_status.lower() != "paid") or (order.fulfillment_status and order.fulfillment_status.lower() != "unfulfilled"):
+                continue
 
-            shipping_charged = sum(float(getattr(line, 'price', 0))
-                                   for line in order.shipping_lines)
-            shipping_tax = sum(float(tax_line.price)
-                               for line in order.shipping_lines for tax_line in line.tax_lines)
+            # If tagging is disabled, process all orders regardless of tags
+            if not ENABLE_TAGGING:
+                pass  # Do nothing, process all orders
+            else:
+                # Skip the order only if tagging is enabled and the order has the 'Invoicing' tag
+                if ORDER_TAG in order.tags:
+                    continue
 
-            row_data = {
-                'Order Number': order.order_number,
-                'Order Date': order_date,
-                'Financial Status': order.financial_status,
-                'Fulfillment Status': order.fulfillment_status,
-                'Currency': order.currency if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'Subtotal Price': order.subtotal_price if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'Total Discounts': order.total_discounts if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'Total Tax': order.total_tax if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'Total Shipping Charged': shipping_charged if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'Total Shipping Tax': shipping_tax if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'Total VAT Amount': vat_amount if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'VAT Rate': vat_rate if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
-                'SKU': barcode,
-                'Quantity': item.quantity,
-                'Line Item Price': item.price,
-                'Line Item Tax': line_item_tax,
-                'Discount Allocations': sum(float(alloc.amount) for alloc in item.discount_allocations),
-                'Duties': sum(float(duty.price) for duty in item.duties)
-            }
+            first_row = True
+            order_export_data = []  # Temp storage for each order's line items
+            for item in order.line_items:
+                order_date = parse(order.created_at).strftime("%Y-%m-%d")
+                barcode = "Unavailable"
+                line_item_tax = 0.0
+                vat_amount = 0.0
+                vat_rate = 0.0
 
-            if any(value != '' and value != 0 for value in row_data.values()):
-                orders_data.append(row_data)
-            first_row = False
+                try:
+                    variant = shopify.Variant.find(item.variant_id)
+                    if variant:
+                        barcode = getattr(variant, 'barcode', "Unavailable")
+                except Exception as e:
+                    print(
+                        f"Failed to fetch variant for line item in order {order.order_number}, item: {item.title}. Error: {e}")
 
-        if ENABLE_TAGGING:
-            # Use the global invoicing tag variable
-            add_tag_to_order(order, ORDER_TAG)
+                for tax_line in item.tax_lines:
+                    line_item_tax += float(tax_line.price)
+                    if tax_line.title.lower() == 'vat':
+                        vat_amount += float(tax_line.price)
+                        vat_rate = tax_line.rate
+
+                shipping_charged = sum(float(getattr(line, 'price', 0))
+                                       for line in order.shipping_lines)
+                shipping_tax = sum(float(
+                    tax_line.price) for line in order.shipping_lines for tax_line in line.tax_lines)
+
+                row_data = {
+                    'Order Number': order.order_number,
+                    'Order Date': order_date,
+                    'Financial Status': order.financial_status,
+                    'Fulfillment Status': 'unfulfilled',
+                    # 'Fulfillment Status': order.fulfillment_status,
+                    'Currency': order.currency if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '',
+                    'Subtotal Price': order.subtotal_price if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '0.00',
+                    'Total Discounts': order.total_discounts if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '0.00',
+                    'Total Tax': order.total_tax if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '0.00',
+                    'Total Shipping Charged': shipping_charged if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '0.00',
+                    'Total Shipping Tax': shipping_tax if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '0.00',
+                    'Total VAT Amount': vat_amount if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '0.00',
+                    'VAT Rate': vat_rate if first_row or not POPULATE_TOTALS_ON_FIRST_ROW_ONLY else '0.00',
+                    'SKU': barcode,
+                    'Quantity': item.quantity,
+                    'Line Item Price': item.price,
+                    'Line Item Tax': line_item_tax,
+                    'Discount Allocations': sum(float(alloc.amount) for alloc in item.discount_allocations),
+                    'Duties': sum(float(duty.price) for duty in item.duties)
+                }
+
+                if any(value != '' and value != 0 for value in row_data.values()):
+                    order_export_data.append(row_data)
+                first_row = False
+
+            # Only add the order if it contains line items to export
+            if order_export_data:
+                orders_data.extend(order_export_data)
+
+                # Only tag the order if tagging is enabled
+                if ENABLE_TAGGING:
+                    add_tag_to_order(order, ORDER_TAG)
+
+        # Get the next page URL for pagination
+        next_page_url = orders.next_page_url
+        if not next_page_url:
+            break
 
     if orders_data:
         df = pd.DataFrame(orders_data)
@@ -152,7 +187,7 @@ def fetch_and_export_orders():
 
         # Generate CSV content
         csv_content = df.to_csv(
-            index=False, lineterminator='\n', encoding='utf-8')  # Corrected keyword argument
+            index=False, lineterminator='\n', encoding='utf-8')
 
         # Save to SMB
         save_to_smb(csv_content, SERVER_NAME, SHARE_NAME,
@@ -172,4 +207,5 @@ def fetch_and_export_orders():
         print("No new orders to export.")
 
 
+# Run the script
 fetch_and_export_orders()
