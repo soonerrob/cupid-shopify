@@ -185,3 +185,5 @@ old code.py
 import-inventory-to-shopify-old.py
 find-shipping-events.py
 transactions-test.py
+export-invoicing-to-400-gql-discounts-total-for-order.py
+export-invoicing-4-theresa.py
