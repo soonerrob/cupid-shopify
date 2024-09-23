@@ -30,11 +30,11 @@ DOMAIN = ''
 # Global variables
 POPULATE_TOTALS_ON_FIRST_ROW_ONLY = True
 ENABLE_TAGGING = True  # Control tagging functionality
-SMB_FILENAME = "CupidWebSales-specific.csv"  # Global filename
+SMB_FILENAME = "CupidWebSales.csv"  # Global filename
 ORDER_TAG = "Invoicing"  # Global tag for invoicing
 
 # List of specific order names (IDs) to fetch
-ORDER_NAMES = ["#69584"]  # Add your order names here
+ORDER_NAMES = ["#69747"]  # Add your order names here
 
 
 def add_tag_to_order(order, tag):
@@ -62,7 +62,6 @@ def add_tag_to_order(order, tag):
 
 # Function to send GraphQL query to Shopify to fetch specific orders
 
-
 def fetch_orders_from_graphql():
     url = f"https://{shop_name}.myshopify.com/admin/api/2024-07/graphql.json"
     headers = {
@@ -85,17 +84,22 @@ def fetch_orders_from_graphql():
             displayFulfillmentStatus
             currencyCode
             subtotalPrice
-            totalDiscounts
+            totalDiscounts  # Add this to get the total merchandise discounts
             totalTax
             totalShippingPrice
-            shippingLines(first: 250) {{
+            shippingLines(first: 100) {{
               nodes {{
+                discountAllocations {{
+                  allocatedAmount {{
+                    amount
+                  }}
+                }}
                 taxLines {{
                   price
                 }}
               }}
             }}
-            lineItems(first: 250) {{
+            lineItems(first: 100) {{
               edges {{
                 node {{
                   variant {{
@@ -103,7 +107,7 @@ def fetch_orders_from_graphql():
                   }}
                   quantity
                   originalUnitPrice
-                  taxLines(first: 250) {{
+                  taxLines {{
                     price
                   }}
                   discountAllocations {{
@@ -175,10 +179,22 @@ def fetch_and_export_orders():
         shipping_tax = sum(float(
             tax_line['price']) for line in node['shippingLines']['nodes'] for tax_line in line['taxLines'])
 
+        total_merchandise_discount = float(node.get('totalDiscounts', '0.00'))
+        total_shipping_discount = sum(float(
+            alloc['allocatedAmount']['amount']) for line in node['shippingLines']['nodes'] for alloc in line['discountAllocations'])
+
         for item in node['lineItems']['edges']:
             line_item = item['node']
             line_item_tax = sum(float(tax['price'])
                                 for tax in line_item['taxLines'])
+
+            # Set default barcode value
+            barcode = "Unavailable"
+            if line_item.get('variant'):
+                barcode = line_item['variant'].get('barcode', "Unavailable")
+
+            discount_allocations = sum(float(
+                alloc['allocatedAmount']['amount']) for alloc in line_item['discountAllocations'])
 
             row_data = {
                 'Order Number': node['name'].replace("#", ""),
@@ -187,17 +203,18 @@ def fetch_and_export_orders():
                 'Fulfillment Status': node['displayFulfillmentStatus'],
                 'Currency': node['currencyCode'] if first_row else '',
                 'Subtotal Price': node['subtotalPrice'] if first_row else '0.00',
-                'Total Discounts': node['totalDiscounts'] if first_row else '0.00',
+                'Total Merchandise Discounts': total_merchandise_discount if first_row else '0.00',
+                'Total Shipping Discounts': total_shipping_discount if first_row else '0.00',
                 'Total Tax': node['totalTax'] if first_row else '0.00',
                 'Total Shipping Charged': node['totalShippingPrice'] if first_row else '0.00',
                 'Total Shipping Tax': shipping_tax if first_row else '0.00',
-                'Total VAT Amount': '0.00',  # Empty field for VAT Amount
-                'VAT Rate': '0.00',  # Empty field for VAT Rate
-                'SKU': line_item['variant']['barcode'],
+                'Total VAT Amount': '0.00',
+                'VAT Rate': '0.00',
+                'SKU': barcode,
                 'Quantity': line_item['quantity'],
                 'Line Item Price': line_item['originalUnitPrice'],
                 'Line Item Tax': line_item_tax,
-                'Discount Allocations': sum(float(alloc['allocatedAmount']['amount']) for alloc in line_item['discountAllocations']),
+                'Discount Allocations': discount_allocations,
                 'Duties': sum(float(duty['price']['shopMoney']['amount']) for duty in line_item['duties'])
             }
             processed_data.append(row_data)
@@ -209,8 +226,18 @@ def fetch_and_export_orders():
     df = pd.DataFrame(processed_data)
     df.fillna('', inplace=True)
 
+    # Define the order of the columns to match the other script
+    column_order = [
+        'Order Number', 'Order Date', 'Financial Status', 'Fulfillment Status', 'Currency',
+        'Subtotal Price', 'Total Merchandise Discounts', 'Total Tax', 'Total Shipping Charged',
+        'Total Shipping Discounts', 'Total Shipping Tax', 'Total VAT Amount', 'VAT Rate',
+        'SKU', 'Quantity', 'Line Item Price', 'Line Item Tax', 'Discount Allocations',
+        'Duties'
+    ]
+
     # Save to SMB
-    csv_content = df.to_csv(index=False, lineterminator='\n', encoding='utf-8')
+    csv_content = df.to_csv(index=False, columns=column_order,
+                            lineterminator='\n', encoding='utf-8')
     save_to_smb(csv_content, SERVER_NAME, SHARE_NAME,
                 SMB_FILENAME, USERNAME, PASSWORD, DOMAIN)
 
