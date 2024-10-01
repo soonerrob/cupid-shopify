@@ -16,7 +16,11 @@ shop_name = os.getenv('SHOP_NAME')
 admin_api_token = os.getenv('API_ACCESS_TOKEN')
 
 # Directory where the CSV file will be saved
-EXPORT_DIR = "export-invoicing-to-400-archive"
+EXPORT_DIR = os.getenv('INVOICING_EXPORT_PATH')
+
+if not EXPORT_DIR:
+    raise ValueError("INVOICING_EXPORT_PATH not set in environment variables")
+
 if not os.path.exists(EXPORT_DIR):
     os.makedirs(EXPORT_DIR)
 
@@ -30,7 +34,7 @@ DOMAIN = ''
 # Global variables
 POPULATE_TOTALS_ON_FIRST_ROW_ONLY = True
 ENABLE_TAGGING = True  # Control tagging functionality
-SMB_FILENAME = "CupidWebSales-monday.csv"  # Global filename
+SMB_FILENAME = "CupidWebSales.csv"  # Global filename
 ORDER_TAG = "Invoicing"  # Global tag for invoicing
 DAYS_TO_GO_BACK = 6  # Global variable to set the number of days to go back
 ENABLE_PADDING = True  # Enable or disable padding up to 25KB
