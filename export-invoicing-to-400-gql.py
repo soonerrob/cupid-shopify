@@ -8,7 +8,7 @@ from dateutil.parser import parse
 from dotenv import load_dotenv
 from smb.SMBConnection import SMBConnection
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
 # Retrieve essential information from environment variables
@@ -18,9 +18,11 @@ admin_api_token = os.getenv('API_ACCESS_TOKEN')
 # Directory where the CSV file will be saved
 EXPORT_DIR = os.getenv('INVOICING_EXPORT_PATH')
 
+# Raise an error if the export directory is not set
 if not EXPORT_DIR:
     raise ValueError("INVOICING_EXPORT_PATH not set in environment variables")
 
+# Create the export directory if it doesn't exist
 if not os.path.exists(EXPORT_DIR):
     os.makedirs(EXPORT_DIR)
 
@@ -31,19 +33,29 @@ USERNAME = os.getenv("IBM_USERNAME")
 PASSWORD = os.getenv("IBM_PASSWORD")
 DOMAIN = ''
 
-# Global variables
+# Global configuration variables
+# Whether to populate totals only on the first row
 POPULATE_TOTALS_ON_FIRST_ROW_ONLY = True
 ENABLE_TAGGING = True  # Control tagging functionality
-SMB_FILENAME = "CupidWebSales.csv"  # Global filename
-ORDER_TAG = "Invoicing"  # Global tag for invoicing
-DAYS_TO_GO_BACK = 6  # Global variable to set the number of days to go back
-ENABLE_PADDING = True  # Enable or disable padding up to 25KB
+SMB_FILENAME = "CupidWebSales.csv"  # Global filename for SMB storage
+ORDER_TAG = "Invoicing"  # Global tag to be applied to orders
+DAYS_TO_GO_BACK = 6  # Number of days to look back for orders
+ENABLE_PADDING = True  # Enable or disable padding for SMB file size
 PADDING_CHARACTER = ' '  # Character to use for padding
-
-# Function to add tag to orders
 
 
 def add_tag_to_order(order, tag):
+    """
+    Adds a specific tag to a given order by sending a mutation request
+    to Shopify's GraphQL API.
+
+    Args:
+        order (dict): A dictionary representing an order node from Shopify.
+        tag (str): The tag to add to the order.
+
+    Returns:
+        dict: The response from the Shopify API.
+    """
     mutation_query = f'''
     mutation {{
         tagsAdd(id: "{order['id']}", tags: ["{tag}"]) {{
@@ -63,10 +75,23 @@ def add_tag_to_order(order, tag):
         url, json={"query": mutation_query}, headers=headers)
     return response.json()
 
-# Function to save the data to SMB
-
 
 def save_to_smb(file_content, server_name, share_name, smb_filename, username, password, domain=''):
+    """
+    Saves a file to an SMB share with optional padding for a minimum file size.
+
+    Args:
+        file_content (str): The content of the file to be saved.
+        server_name (str): The name of the SMB server.
+        share_name (str): The name of the share on the SMB server.
+        smb_filename (str): The name of the file to be saved on the SMB share.
+        username (str): The username for SMB authentication.
+        password (str): The password for SMB authentication.
+        domain (str, optional): The domain for SMB authentication. Defaults to ''.
+
+    Raises:
+        ConnectionError: If unable to connect to the SMB server.
+    """
     conn = SMBConnection(username, password, "client_machine", server_name,
                          domain=domain, use_ntlm_v2=True, is_direct_tcp=True)
 
@@ -75,13 +100,11 @@ def save_to_smb(file_content, server_name, share_name, smb_filename, username, p
             f"Unable to connect to the server: {server_name}")
 
     try:
-        # Only add padding if ENABLE_PADDING is True
         if ENABLE_PADDING:
             file_size = len(file_content.encode('utf-8'))
             min_size = 25 * 1024  # 25KB
             if file_size < min_size:
                 padding_size = min_size - file_size
-                # Add the specified padding character
                 file_content += PADDING_CHARACTER * padding_size
 
         with BytesIO(file_content.encode('utf-8')) as file:
@@ -93,76 +116,84 @@ def save_to_smb(file_content, server_name, share_name, smb_filename, username, p
     finally:
         conn.close()
 
-# Function to send GraphQL query to Shopify with pagination
-
 
 def fetch_orders_from_graphql(cursor=None):
+    """
+    Fetches orders from Shopify's GraphQL API with pagination support.
+
+    Args:
+        cursor (str, optional): A cursor for paginating through the orders. Defaults to None.
+
+    Returns:
+        dict: A dictionary containing the fetched orders and pagination info.
+    """
     start_date = (datetime.now(timezone.utc) -
                   timedelta(days=DAYS_TO_GO_BACK)).isoformat()
     after_clause = f', after: "{cursor}"' if cursor else ""
+
     query = f'''
-{{
-  orders(first: 250, query: "created_at:>\\\"{start_date}\\\"" {after_clause}) {{
-    edges {{
-      node {{
-        id
-        name
-        tags
-        createdAt
-        displayFinancialStatus
-        displayFulfillmentStatus
-        currencyCode
-        subtotalPrice
-        totalDiscounts  # Add this to get the total merchandise discounts
-        totalTax
-        totalShippingPrice
-        shippingLines(first: 100) {{
-          nodes {{
-            discountAllocations {{
-              allocatedAmount {{
-                amount
-              }}
-            }}
-            taxLines {{
-              price
-            }}
-          }}
-        }}
-        lineItems(first: 100) {{
-          edges {{
-            node {{
-              variant {{
-                barcode
-              }}
-              quantity
-              originalUnitPrice
-              taxLines {{
-                price
-              }}
-              discountAllocations {{
-                allocatedAmount {{
-                  amount
+    {{
+      orders(first: 250, query: "created_at:>\\\"{start_date}\\\"" {after_clause}) {{
+        edges {{
+          node {{
+            id
+            name
+            tags
+            createdAt
+            displayFinancialStatus
+            displayFulfillmentStatus
+            currencyCode
+            subtotalPrice
+            totalDiscounts
+            totalTax
+            totalShippingPrice
+            shippingLines(first: 100) {{
+              nodes {{
+                discountAllocations {{
+                  allocatedAmount {{
+                    amount
+                  }}
+                }}
+                taxLines {{
+                  price
                 }}
               }}
-              duties {{
-                price {{
-                  shopMoney {{
-                    amount
+            }}
+            lineItems(first: 100) {{
+              edges {{
+                node {{
+                  variant {{
+                    barcode
+                  }}
+                  quantity
+                  originalUnitPrice
+                  taxLines {{
+                    price
+                  }}
+                  discountAllocations {{
+                    allocatedAmount {{
+                      amount
+                    }}
+                  }}
+                  duties {{
+                    price {{
+                      shopMoney {{
+                        amount
+                      }}
+                    }}
                   }}
                 }}
               }}
             }}
           }}
+          cursor
+        }}
+        pageInfo {{
+          hasNextPage
         }}
       }}
-      cursor
     }}
-    pageInfo {{
-      hasNextPage
-    }}
-  }}
-}}
-'''
+    '''
 
     url = f"https://{shop_name}.myshopify.com/admin/api/2024-07/graphql.json"
     headers = {
@@ -178,12 +209,16 @@ def fetch_orders_from_graphql(cursor=None):
 
     return response_json['data']['orders']
 
-# Function to fetch and export orders using GraphQL
-
-
-# Adjust fetch_and_export_orders function to reflect the new logic
 
 def fetch_and_export_orders():
+    """
+    Fetches orders from Shopify's GraphQL API, processes the data,
+    and exports the results to both an SMB share and a local CSV file.
+    Orders are tagged and filtered based on financial and fulfillment statuses.
+
+    Raises:
+        Exception: If any errors occur during data retrieval or export.
+    """
     all_orders = []
     cursor = None
     has_next_page = True
@@ -199,12 +234,11 @@ def fetch_and_export_orders():
     for order in all_orders:
         node = order['node']
 
-        # Apply the 'paid' and 'unfulfilled' filters only if tagging is enabled
+        # Apply filters based on financial and fulfillment status
         if ENABLE_TAGGING:
             if node['displayFinancialStatus'] != 'PAID' or node['displayFulfillmentStatus'] != 'UNFULFILLED':
                 continue  # Skip orders that don't meet the criteria
 
-            # Skip the order if it already has the tag
             if ORDER_TAG in node.get('tags', []):
                 print(
                     f"Order {node['name']} already has the tag '{ORDER_TAG}', skipping.")
@@ -214,26 +248,19 @@ def fetch_and_export_orders():
         shipping_tax = sum(float(
             tax_line['price']) for line in node['shippingLines']['nodes'] for tax_line in line['taxLines'])
 
-        # Use totalDiscounts for merchandise discounts at the order level
         total_merchandise_discount = float(node.get('totalDiscounts', '0.00'))
-
-        # Calculate total shipping discounts
-        total_shipping_discount = sum(float(
-            alloc['allocatedAmount']['amount']) for line in node['shippingLines']['nodes'] for alloc in line['discountAllocations'])
+        total_shipping_discount = sum(float(alloc['allocatedAmount']['amount'])
+                                      for line in node['shippingLines']['nodes'] for alloc in line['discountAllocations'])
 
         for item in node['lineItems']['edges']:
             line_item = item['node']
             line_item_tax = sum(float(tax['price'])
                                 for tax in line_item['taxLines'])
 
-            # Set default barcode value
             barcode = "Unavailable"
-
-            # Check if the variant and barcode exist
             if line_item.get('variant'):
                 barcode = line_item['variant'].get('barcode', "Unavailable")
 
-            # Calculate discount allocations for this specific line item
             discount_allocations = sum(float(
                 alloc['allocatedAmount']['amount']) for alloc in line_item['discountAllocations'])
 
@@ -249,13 +276,12 @@ def fetch_and_export_orders():
                 'Total Tax': node['totalTax'] if first_row else '0.00',
                 'Total Shipping Charged': node['totalShippingPrice'] if first_row else '0.00',
                 'Total Shipping Tax': shipping_tax if first_row else '0.00',
-                'Total VAT Amount': '0.00',  # Empty field for VAT Amount
-                'VAT Rate': '0.00',  # Empty field for VAT Rate
-                'SKU': barcode,  # Use the default value if barcode is missing
+                'Total VAT Amount': '0.00',
+                'VAT Rate': '0.00',
+                'SKU': barcode,
                 'Quantity': line_item['quantity'],
                 'Line Item Price': line_item['originalUnitPrice'],
                 'Line Item Tax': line_item_tax,
-                # Add new column for line item discounts
                 'Discount Allocations': discount_allocations,
                 'Duties': sum(float(duty['price']['shopMoney']['amount']) for duty in line_item['duties'])
             }
@@ -268,23 +294,19 @@ def fetch_and_export_orders():
     df = pd.DataFrame(processed_data)
     df.fillna('', inplace=True)
 
-    # Define the order of the columns
     column_order = [
         'Order Number', 'Order Date', 'Financial Status', 'Fulfillment Status', 'Currency',
         'Subtotal Price', 'Total Merchandise Discounts', 'Total Tax', 'Total Shipping Charged',
         'Total Shipping Discounts', 'Total Shipping Tax', 'Total VAT Amount', 'VAT Rate',
-        # Add new column here
         'SKU', 'Quantity', 'Line Item Price', 'Line Item Tax', 'Discount Allocations',
         'Duties'
     ]
 
-    # Save to SMB
     csv_content = df.to_csv(index=False, columns=column_order,
                             lineterminator='\n', encoding='utf-8')
     save_to_smb(csv_content, SERVER_NAME, SHARE_NAME,
                 SMB_FILENAME, USERNAME, PASSWORD, DOMAIN)
 
-    # Save locally
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     local_filename = f"orders-for-invoicing-{timestamp}.csv"
     local_export_path = os.path.join(EXPORT_DIR, local_filename)
@@ -295,5 +317,5 @@ def fetch_and_export_orders():
     print(f"Orders exported successfully to {local_export_path}")
 
 
-# Run the script
+# Run the script to fetch and export orders
 fetch_and_export_orders()
