@@ -43,22 +43,6 @@ DAYS_TO_GO_BACK = 6  # Number of days to look back for orders
 ENABLE_PADDING = True  # Enable or disable padding for SMB file size
 PADDING_CHARACTER = ' '  # Character to use for padding
 
-# Add more prefixes as needed seperated by commas
-EXCLUDED_TAG_PREFIXES = ["reship"]
-
-
-def should_exclude_order(order_tags):
-    """
-    Excludes orders that have tags starting with any of the specified prefixes.
-
-    Args:
-        order_tags (list): A list of tags associated with an order.
-
-    Returns:
-        bool: True if the order should be excluded, False otherwise.
-    """
-    return any(tag.startswith(prefix) for prefix in EXCLUDED_TAG_PREFIXES for tag in order_tags)
-
 
 def add_tag_to_order(order, tag):
     """
@@ -201,26 +185,6 @@ def fetch_orders_from_graphql(cursor=None):
                 }}
               }}
             }}
-            transactions(first: 10) {{
-              amountSet {{
-                presentmentMoney {{
-                  amount
-                  currencyCode
-                }}
-              }}
-              fees {{
-                amount {{
-                  amount
-                  currencyCode
-                }}
-                rate
-                flatFee {{
-                  amount
-                  currencyCode
-                }}
-              }}
-              status  # Add status to the query
-            }}
           }}
           cursor
         }}
@@ -270,11 +234,6 @@ def fetch_and_export_orders():
     for order in all_orders:
         node = order['node']
 
-        # Exclude orders with tags matching EXCLUDED_TAG_PREFIXES
-        if should_exclude_order(node.get('tags', [])):
-            print(f"Order {node['name']} has excluded tags, skipping.")
-            continue
-
         # Apply filters based on financial and fulfillment status
         if ENABLE_TAGGING:
             if node['displayFinancialStatus'] != 'PAID' or node['displayFulfillmentStatus'] != 'UNFULFILLED':
@@ -305,15 +264,6 @@ def fetch_and_export_orders():
             discount_allocations = sum(float(
                 alloc['allocatedAmount']['amount']) for alloc in line_item['discountAllocations'])
 
-            # Find the accepted transaction
-            transaction_fee = 0.0
-            for transaction in node['transactions']:
-                # Consider all successful transactions with fees
-                if transaction['status'] == 'SUCCESS':
-                    fees = transaction.get('fees', [])
-                    for fee in fees:
-                        transaction_fee += float(fee['amount']['amount'])
-
             row_data = {
                 'Order Number': node['name'].replace("#", ""),
                 'Order Date': parse(node['createdAt']).strftime("%Y-%m-%d"),
@@ -333,8 +283,7 @@ def fetch_and_export_orders():
                 'Line Item Price': line_item['originalUnitPrice'],
                 'Line Item Tax': line_item_tax,
                 'Discount Allocations': discount_allocations,
-                'Duties': sum(float(duty['price']['shopMoney']['amount']) for duty in line_item['duties']),
-                'Transaction Fee': transaction_fee if first_row else '0.00'
+                'Duties': sum(float(duty['price']['shopMoney']['amount']) for duty in line_item['duties'])
             }
             processed_data.append(row_data)
             first_row = False
@@ -350,7 +299,7 @@ def fetch_and_export_orders():
         'Subtotal Price', 'Total Merchandise Discounts', 'Total Tax', 'Total Shipping Charged',
         'Total Shipping Discounts', 'Total Shipping Tax', 'Total VAT Amount', 'VAT Rate',
         'SKU', 'Quantity', 'Line Item Price', 'Line Item Tax', 'Discount Allocations',
-        'Duties', 'Transaction Fee'
+        'Duties'
     ]
 
     csv_content = df.to_csv(index=False, columns=column_order,
