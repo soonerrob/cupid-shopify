@@ -1,7 +1,9 @@
+import csv
 import json
 import os
+from time import sleep
+
 import requests
-import csv
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -18,6 +20,7 @@ headers = {
     "X-Shopify-Access-Token": admin_api_token,
     "Content-Type": "application/json"
 }
+
 
 def get_all_barcodes():
     barcodes = set()
@@ -46,24 +49,32 @@ def get_all_barcodes():
             }
         }
         """
-        response = requests.post(shop_url, headers=headers, json={'query': query})
+        try:
+            response = requests.post(
+                shop_url, headers=headers, json={'query': query})
 
-        if response.status_code == 200:
-            data = response.json()
-            products = data['data']['products']['edges']
-            for product in products:
-                for variant in product['node']['variants']['edges']:
-                    barcode = variant['node']['barcode']
-                    if barcode and barcode.strip():
-                        barcodes.add(barcode)
-            has_next_page = data['data']['products']['pageInfo']['hasNextPage']
-            if has_next_page:
-                cursor = products[-1]['cursor']
-        else:
-            print(f"Failed to fetch data: {response.status_code} - {response.text}")
-            break
+            if response.status_code == 200:
+                data = response.json()
+                products = data['data']['products']['edges']
+                for product in products:
+                    for variant in product['node']['variants']['edges']:
+                        barcode = variant['node']['barcode']
+                        if barcode and barcode.strip():
+                            barcodes.add(barcode)
+                has_next_page = data['data']['products']['pageInfo']['hasNextPage']
+                if has_next_page:
+                    cursor = products[-1]['cursor']
+            else:
+                print(
+                    f"Failed to fetch data: {response.status_code} - {response.text}")
+                break
+        except requests.exceptions.RequestException as e:
+            print(f"Request error: {e}")
+            sleep(2)  # Pause and retry
+            continue
 
     return barcodes
+
 
 def main():
     barcodes = get_all_barcodes()
@@ -75,6 +86,7 @@ def main():
         writer.writerow(['Barcode'])
         for barcode in barcodes:
             writer.writerow([barcode])
+
 
 if __name__ == "__main__":
     main()

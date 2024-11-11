@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
@@ -29,12 +29,14 @@ DOMAIN = ''
 
 # Global variables
 POPULATE_TOTALS_ON_FIRST_ROW_ONLY = True
-ENABLE_TAGGING = True  # Control tagging functionality
-SMB_FILENAME = "CupidWebSales.csv"  # Global filename
+ENABLE_TAGGING = False  # Control tagging functionality
+SMB_FILENAME = "CupidWebSales-70838.csv"  # Global filename
 ORDER_TAG = "Invoicing"  # Global tag for invoicing
 
 # List of specific order names (IDs) to fetch
-ORDER_NAMES = ["#69747"]  # Add your order names here
+ORDER_NAMES = [
+    "#70838"
+]
 
 
 def add_tag_to_order(order, tag):
@@ -59,8 +61,8 @@ def add_tag_to_order(order, tag):
         response = requests.post(
             url, json={"query": mutation_query}, headers=headers)
 
-
 # Function to send GraphQL query to Shopify to fetch specific orders
+
 
 def fetch_orders_from_graphql():
     url = f"https://{shop_name}.myshopify.com/admin/api/2024-07/graphql.json"
@@ -83,8 +85,7 @@ def fetch_orders_from_graphql():
             displayFinancialStatus
             displayFulfillmentStatus
             currencyCode
-            subtotalPrice
-            totalDiscounts  # Add this to get the total merchandise discounts
+            totalDiscounts
             totalTax
             totalShippingPrice
             shippingLines(first: 100) {{
@@ -105,7 +106,7 @@ def fetch_orders_from_graphql():
                   variant {{
                     barcode
                   }}
-                  quantity
+                  currentQuantity
                   originalUnitPrice
                   taxLines {{
                     price
@@ -125,6 +126,21 @@ def fetch_orders_from_graphql():
                 }}
               }}
             }}
+            transactions(first: 10) {{
+              amountSet {{
+                presentmentMoney {{
+                  amount
+                  currencyCode
+                }}
+              }}
+              fees {{
+                amount {{
+                  amount
+                  currencyCode
+                }}
+              }}
+              status
+            }}
           }}
         }}
       }}
@@ -140,8 +156,9 @@ def fetch_orders_from_graphql():
 
     return response_json['data']['orders']
 
-
 # Function to save the data to SMB
+
+
 def save_to_smb(file_content, server_name, share_name, smb_filename, username, password, domain=''):
     conn = SMBConnection(username, password, "client_machine", server_name,
                          domain=domain, use_ntlm_v2=True, is_direct_tcp=True)
@@ -176,25 +193,65 @@ def fetch_and_export_orders():
     for order in all_orders['edges']:
         node = order['node']
         first_row = True
-        shipping_tax = sum(float(
-            tax_line['price']) for line in node['shippingLines']['nodes'] for tax_line in line['taxLines'])
 
-        total_merchandise_discount = float(node.get('totalDiscounts', '0.00'))
-        total_shipping_discount = sum(float(
-            alloc['allocatedAmount']['amount']) for line in node['shippingLines']['nodes'] for alloc in line['discountAllocations'])
+        # Calculate shipping tax and round to 2 decimal places
+        shipping_tax = round(sum(
+            float(tax_line['price']) for line in node['shippingLines']['nodes']
+            for tax_line in line['taxLines']
+        ), 2)
 
+        # Calculate total merchandise discounts for active line items (currentQuantity > 0)
+        total_merchandise_discount = sum(
+            sum(float(alloc['allocatedAmount']['amount'])
+                for alloc in line_item['node']['discountAllocations'])
+            for line_item in node['lineItems']['edges']
+            if line_item['node']['currentQuantity'] > 0
+        )
+
+        # Calculate subtotal for active line items (currentQuantity > 0)
+        subtotal = sum(
+            (float(line_item['node']['originalUnitPrice']) * line_item['node']['currentQuantity']) -
+            sum(float(alloc['allocatedAmount']['amount'])
+                for alloc in line_item['node']['discountAllocations'])
+            for line_item in node['lineItems']['edges']
+            if line_item['node']['currentQuantity'] > 0
+        )
+
+        # Calculate total tax for active line items (currentQuantity > 0) and round to 2 decimal places
+        total_tax = round(sum(
+            sum(float(tax['price']) for tax in line_item['node']['taxLines'])
+            for line_item in node['lineItems']['edges']
+            if line_item['node']['currentQuantity'] > 0
+        ), 2)
+
+        # Initialize the transaction fee calculation
+        transaction_fee = 0.0
+        for transaction in node['transactions']:
+            if transaction['status'] == 'SUCCESS':
+                for fee in transaction.get('fees', []):
+                    transaction_fee += float(fee['amount']['amount'])
+
+        total_shipping_discount = sum(float(alloc['allocatedAmount']['amount'])
+                                      for line in node['shippingLines']['nodes'] for alloc in line['discountAllocations'])
+
+        # Loop through each line item and process only those with currentQuantity > 0
         for item in node['lineItems']['edges']:
             line_item = item['node']
-            line_item_tax = sum(float(tax['price'])
-                                for tax in line_item['taxLines'])
 
-            # Set default barcode value
-            barcode = "Unavailable"
-            if line_item.get('variant'):
-                barcode = line_item['variant'].get('barcode', "Unavailable")
+            # Skip line items with currentQuantity == 0
+            if line_item['currentQuantity'] == 0:
+                continue
+
+            # Calculate line item tax and discount allocations
+            line_item_tax = round(
+                sum(float(tax['price']) for tax in line_item['taxLines']), 2)
 
             discount_allocations = sum(float(
                 alloc['allocatedAmount']['amount']) for alloc in line_item['discountAllocations'])
+
+            # Set default barcode value
+            barcode = line_item['variant'].get(
+                'barcode', "Unavailable") if line_item.get('variant') else "Unavailable"
 
             row_data = {
                 'Order Number': node['name'].replace("#", ""),
@@ -202,24 +259,26 @@ def fetch_and_export_orders():
                 'Financial Status': node['displayFinancialStatus'],
                 'Fulfillment Status': node['displayFulfillmentStatus'],
                 'Currency': node['currencyCode'] if first_row else '',
-                'Subtotal Price': node['subtotalPrice'] if first_row else '0.00',
+                'Subtotal Price': f"{round(subtotal, 2):.2f}" if first_row else '0.00',
                 'Total Merchandise Discounts': total_merchandise_discount if first_row else '0.00',
                 'Total Shipping Discounts': total_shipping_discount if first_row else '0.00',
-                'Total Tax': node['totalTax'] if first_row else '0.00',
+                'Total Tax': round(total_tax + shipping_tax, 2) if first_row else '0.00',
                 'Total Shipping Charged': node['totalShippingPrice'] if first_row else '0.00',
                 'Total Shipping Tax': shipping_tax if first_row else '0.00',
                 'Total VAT Amount': '0.00',
                 'VAT Rate': '0.00',
                 'SKU': barcode,
-                'Quantity': line_item['quantity'],
+                'Quantity': line_item['currentQuantity'],
                 'Line Item Price': line_item['originalUnitPrice'],
                 'Line Item Tax': line_item_tax,
                 'Discount Allocations': discount_allocations,
-                'Duties': sum(float(duty['price']['shopMoney']['amount']) for duty in line_item['duties'])
+                'Duties': sum(float(duty['price']['shopMoney']['amount']) for duty in line_item['duties']),
+                'Transaction Fee': transaction_fee if first_row else '0.00'
             }
             processed_data.append(row_data)
-            first_row = False
+            first_row = False  # After the first row, clear first_row-specific fields
 
+        # Optional tagging for orders
         if ENABLE_TAGGING:
             add_tag_to_order(node, ORDER_TAG)
 
@@ -232,7 +291,7 @@ def fetch_and_export_orders():
         'Subtotal Price', 'Total Merchandise Discounts', 'Total Tax', 'Total Shipping Charged',
         'Total Shipping Discounts', 'Total Shipping Tax', 'Total VAT Amount', 'VAT Rate',
         'SKU', 'Quantity', 'Line Item Price', 'Line Item Tax', 'Discount Allocations',
-        'Duties'
+        'Duties', 'Transaction Fee'
     ]
 
     # Save to SMB
@@ -243,7 +302,7 @@ def fetch_and_export_orders():
 
     # Save locally
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    local_filename = f"orders-for-invoicing-{timestamp}.csv"
+    local_filename = f"orders-for-invoicing-spec-{timestamp}.csv"
     local_export_path = os.path.join(EXPORT_DIR, local_filename)
 
     with open(local_export_path, 'w', newline='') as f:

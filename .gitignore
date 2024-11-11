@@ -4,13 +4,12 @@ shopify-app-venv/
 missing-barcode-files/
 cupid-shopify-data-analysis/
 export-*-archive/
-
-
-
+processed/
+input/
 
 
 __pycache__/
-processed/
+
 *.pyc
 *.pyo
 .DS_Store
@@ -189,3 +188,13 @@ find-shipping-events.py
 transactions-test.py
 export-invoicing-to-400-gql-discounts-total-for-order.py
 export-invoicing-4-theresa.py
+compare-sku-upcs.py
+last-good-version.py
+newstart.py
+newstart2.py
+stand_alone_get_paypal_fee_chad.py
+stand_alone_get_paypal_fee_claude.py
+test-refund-api.py
+totalbarcodes.py
+compare-shopify-to-400-inventory/compare-shopify-to-400-inventory-whitelist.txt
+totalbarcodes.py

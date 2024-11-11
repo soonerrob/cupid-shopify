@@ -159,7 +159,6 @@ def fetch_orders_from_graphql(cursor=None):
             displayFinancialStatus
             displayFulfillmentStatus
             currencyCode
-            subtotalPrice
             totalDiscounts
             totalTax
             totalShippingPrice
@@ -181,7 +180,7 @@ def fetch_orders_from_graphql(cursor=None):
                   variant {{
                     barcode
                   }}
-                  quantity
+                  currentQuantity
                   originalUnitPrice
                   taxLines {{
                     price
@@ -286,17 +285,59 @@ def fetch_and_export_orders():
                 continue
 
         first_row = True
-        shipping_tax = sum(float(
-            tax_line['price']) for line in node['shippingLines']['nodes'] for tax_line in line['taxLines'])
 
-        total_merchandise_discount = float(node.get('totalDiscounts', '0.00'))
+        # Calculate shipping tax and round to 2 decimal places
+        shipping_tax = round(sum(
+            float(tax_line['price']) for line in node['shippingLines']['nodes']
+            for tax_line in line['taxLines']
+        ), 2)
+
+        # Calculate total merchandise discounts for active line items (currentQuantity > 0)
+        total_merchandise_discount = sum(
+            sum(float(alloc['allocatedAmount']['amount'])
+                for alloc in line_item['node']['discountAllocations'])
+            for line_item in node['lineItems']['edges']
+            if line_item['node']['currentQuantity'] > 0
+        )
+
+        # Calculate subtotal for active line items (currentQuantity > 0), excluding discounts
+        subtotal = sum(
+            (float(line_item['node']['originalUnitPrice']) * line_item['node']['currentQuantity']) -
+            sum(float(alloc['allocatedAmount']['amount'])
+                for alloc in line_item['node']['discountAllocations'])
+            for line_item in node['lineItems']['edges']
+            if line_item['node']['currentQuantity'] > 0
+        )
+
+        # Calculate total tax for active line items (currentQuantity > 0) and round to 2 decimal places
+        total_tax = round(sum(
+            sum(float(tax['price']) for tax in line_item['node']['taxLines'])
+            for line_item in node['lineItems']['edges']
+            if line_item['node']['currentQuantity'] > 0
+        ), 2)
+
+        # Find the accepted transaction
+        transaction_fee = 0.0
+        for transaction in node['transactions']:
+            # Consider all successful transactions with fees
+            if transaction['status'] == 'SUCCESS':
+                fees = transaction.get('fees', [])
+                for fee in fees:
+                    transaction_fee += float(fee['amount']['amount'])
+
         total_shipping_discount = sum(float(alloc['allocatedAmount']['amount'])
                                       for line in node['shippingLines']['nodes'] for alloc in line['discountAllocations'])
 
         for item in node['lineItems']['edges']:
             line_item = item['node']
-            line_item_tax = sum(float(tax['price'])
-                                for tax in line_item['taxLines'])
+
+            # Skip line items with currentQuantity == 0
+            if line_item.get('currentQuantity', 0) == 0:
+                continue
+
+            # Calculate line item tax and round to 2 decimal places
+            line_item_tax = round(
+                sum(float(tax['price']) for tax in line_item['taxLines']), 2)
 
             barcode = "Unavailable"
             if line_item.get('variant'):
@@ -305,31 +346,22 @@ def fetch_and_export_orders():
             discount_allocations = sum(float(
                 alloc['allocatedAmount']['amount']) for alloc in line_item['discountAllocations'])
 
-            # Find the accepted transaction
-            transaction_fee = 0.0
-            for transaction in node['transactions']:
-                # Consider all successful transactions with fees
-                if transaction['status'] == 'SUCCESS':
-                    fees = transaction.get('fees', [])
-                    for fee in fees:
-                        transaction_fee += float(fee['amount']['amount'])
-
             row_data = {
                 'Order Number': node['name'].replace("#", ""),
                 'Order Date': parse(node['createdAt']).strftime("%Y-%m-%d"),
                 'Financial Status': node['displayFinancialStatus'],
                 'Fulfillment Status': node['displayFulfillmentStatus'],
                 'Currency': node['currencyCode'] if first_row else '',
-                'Subtotal Price': node['subtotalPrice'] if first_row else '0.00',
+                'Subtotal Price': f"{round(subtotal, 2):.2f}" if first_row else '0.00',
                 'Total Merchandise Discounts': total_merchandise_discount if first_row else '0.00',
                 'Total Shipping Discounts': total_shipping_discount if first_row else '0.00',
-                'Total Tax': node['totalTax'] if first_row else '0.00',
+                'Total Tax': round(total_tax + shipping_tax, 2) if first_row else '0.00',
                 'Total Shipping Charged': node['totalShippingPrice'] if first_row else '0.00',
                 'Total Shipping Tax': shipping_tax if first_row else '0.00',
                 'Total VAT Amount': '0.00',
                 'VAT Rate': '0.00',
                 'SKU': barcode,
-                'Quantity': line_item['quantity'],
+                'Quantity': line_item['currentQuantity'],
                 'Line Item Price': line_item['originalUnitPrice'],
                 'Line Item Tax': line_item_tax,
                 'Discount Allocations': discount_allocations,
