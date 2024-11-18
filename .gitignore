@@ -198,3 +198,4 @@ test-refund-api.py
 totalbarcodes.py
 compare-shopify-to-400-inventory/compare-shopify-to-400-inventory-whitelist.txt
 totalbarcodes.py
+test-400-db-connect.py

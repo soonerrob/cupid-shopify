@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 
+import pyodbc
 import requests
 from dotenv import load_dotenv
 from openpyxl import Workbook
@@ -9,16 +10,60 @@ from openpyxl.styles import Font
 # Load environment variables from .env file
 load_dotenv()
 
-# newnew
+# newinvoicecomparison
 
 # Shopify GraphQL API credentials
 shop_name = os.getenv('SHOP_NAME')
 admin_api_token = os.getenv('API_ACCESS_TOKEN')
 export_path = os.getenv('EXPORT_PAYMENTS_PATH')
 
+
+# Database credentials
+dsn = os.getenv('DB_DSN')
+db_username = os.getenv('DB_USERNAME')
+db_password = os.getenv('DB_PASSWORD')
+
 # Global date variables
-start_date = "2024-10-01"  # Replace with your desired start date
-end_date = "2024-10-31"  # Replace with your desired end date
+start_date = "2024-11-01"  # Replace with your desired start date
+end_date = "2024-11-15"  # Replace with your desired end date
+
+
+def fetch_400_invoice_details(order_num):
+    """
+    Fetch the invoice amount (ADDEBA) and invoice number (ADREFN) for a given order number
+    from the ABS400F.MSTARDET table.
+    """
+    try:
+        conn_str = os.getenv("DB_CONNECTION_STRING")
+        if not conn_str:
+            raise ValueError(
+                "Database connection string not found in environment variables.")
+
+        conn = pyodbc.connect(conn_str)
+        cursor = conn.cursor()
+
+        query = """
+        SELECT ADDEBA, ADREFN
+        FROM ABS400F.MSTARDET
+        WHERE ADDEBR = ?
+        """
+        cursor.execute(query, order_num)
+        row = cursor.fetchone()
+
+        if row:
+            invoice_amount = float(row.ADDEBA or 0)  # ADDEBA - Invoice Amount
+            invoice_number = str(row.ADREFN).strip()  # ADREFN - Invoice Number
+        else:
+            invoice_amount = 0.0
+            invoice_number = None
+
+        cursor.close()
+        conn.close()
+        return invoice_amount, invoice_number
+
+    except (pyodbc.Error, ValueError, TypeError) as e:
+        print(f"Error fetching invoice details for order {order_num}: {e}")
+        return 0.0, None
 
 
 def fetch_payouts():
@@ -745,9 +790,12 @@ def create_excel(payouts, output_file):
                 cell.number_format = '#,##0.00'
 
     # Create Payout Comparison sheet
-    comparison_sheet = workbook.create_sheet(title="Payout Comparison")
-    comparison_sheet.append(
-        ["Order", "Original Amount", "Auth Release Amount", "Total Amount"])
+    invoice_comparison_sheet = workbook.create_sheet(
+        title="Invoice Comparison")
+    invoice_comparison_sheet.append(
+        ["Order", "Original Amount", "Auth Release Amount", "Total Amount",
+            "400 Invoice Amount", "Difference", "400 Invoice No."]
+    )
 
     # Dictionary to store all charges
     charges_dict = {}
@@ -784,17 +832,35 @@ def create_excel(payouts, output_file):
         auth_release_amount = auth_releases.get(order_num, 0.00)
         total_amount = charge_amount + auth_release_amount
 
-        comparison_sheet.append([
+        # Fetch invoice amount and invoice number
+        invoice_amount, invoice_number = fetch_400_invoice_details(order_num)
+
+        # Calculate difference
+        difference = total_amount - invoice_amount
+
+        invoice_comparison_sheet.append([
             order_num,
             charge_amount,
             auth_release_amount,
-            total_amount
+            total_amount,
+            invoice_amount,
+            difference,
+            invoice_number
         ])
 
-    # Format numbers in Payout Comparison sheet
-    for row in comparison_sheet.iter_rows(min_row=2):
-        for cell in row[1:]:  # Skip Order column
+    # Format numbers in Invoice Comparison
+    for row in invoice_comparison_sheet.iter_rows(min_row=2):
+        for cell in row[1:6]:  # Skip Order column, include new Difference column
             cell.number_format = '#,##0.00'
+
+    # Reorder sheets to place Invoice Comparison between Payout Overview and Refund Details
+    sheets = workbook.worksheets
+    invoice_comparison_index = sheets.index(invoice_comparison_sheet)
+    refund_details_index = sheets.index(refund_sheet)
+
+    # Move the Invoice Comparison sheet just before the Refund Details sheet
+    sheets.insert(refund_details_index, sheets.pop(invoice_comparison_index))
+    workbook._sheets = sheets  # Update the workbook's sheet order
 
     # Ensure export path exists
     if not os.path.exists(export_path):
