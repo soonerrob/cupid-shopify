@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cupid Web Dashboard</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="container mt-5">
+      <h1 class="mb-4">Shopify Order Download</h1>
+
+      <!-- Flash Messages -->
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div
+              class="alert alert-{{ category }} alert-dismissible fade show"
+              role="alert"
+            >
+              {{ message }}
+              <button
+                type="button"
+                class="btn-close"
+                data-bs-dismiss="alert"
+                aria-label="Close"
+              ></button>
+            </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <!-- Form -->
+      <form method="POST">
+        <!-- Order Names -->
+        <div class="form-floating mb-3">
+          <textarea
+            class="form-control"
+            id="order_names"
+            name="order_names"
+            rows="3"
+            required
+          ></textarea>
+          <label for="order_names">Order Names (example: #72868 or #72868, #72869)</label>
+        </div>
+
+
+        <!-- SMB Filename -->
+        <div class="form-floating mb-3">
+          <input
+            type="text"
+            class="form-control"
+            id="smb_filename"
+            name="smb_filename"
+            value="{{ smb_filename }}"
+            required
+          />
+          <label for="smb_filename">SMB Filename **Make sure today's order file has been processed**</label>
+        </div>
+
+        <!-- Enable Tagging -->
+        <div class="form-check form-switch mb-3">
+          <input
+            class="form-check-input"
+            type="checkbox"
+            id="enable_tagging"
+            name="enable_tagging"
+            {% if enable_tagging %}checked{% endif %}
+          />
+          <label class="form-check-label" for="enable_tagging">Enable Tagging</label>
+        </div>
+
+        <!-- Submit Button -->
+        <button type="submit" class="btn btn-primary">Submit</button>
+      </form>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>

@@ -10,7 +10,6 @@ from openpyxl.styles import Font
 # Load environment variables from .env file
 load_dotenv()
 
-# newinvoicecomparison
 
 # Shopify GraphQL API credentials
 shop_name = os.getenv('SHOP_NAME')
@@ -24,14 +23,15 @@ db_username = os.getenv('DB_USERNAME')
 db_password = os.getenv('DB_PASSWORD')
 
 # Global date variables
-start_date = "2024-11-01"  # Replace with your desired start date
-end_date = "2024-11-15"  # Replace with your desired end date
+start_date = "2025-01-01"  # Replace with your desired start date
+end_date = "2025-01-31"  # Replace with your desired end date
 
 
 def fetch_400_invoice_details(order_num):
     """
     Fetch the invoice amount (ADDEBA) and invoice number (ADREFN) for a given order number
-    from the ABS400F.MSTARDET table.
+    from the ABS400F.MSTARDET table. And ADSLD (Customer Number) = 120
+
     """
     try:
         conn_str = os.getenv("DB_CONNECTION_STRING")
@@ -45,7 +45,7 @@ def fetch_400_invoice_details(order_num):
         query = """
         SELECT ADDEBA, ADREFN
         FROM ABS400F.MSTARDET
-        WHERE ADDEBR = ?
+        WHERE ADDEBR = ? AND ADSLD = 120
         """
         cursor.execute(query, order_num)
         row = cursor.fetchone()

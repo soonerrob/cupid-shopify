@@ -104,57 +104,67 @@ def get_inventory_item_id(upc):
     else:
         print(f"No inventory item found for UPC: {upc}")
         return None
+    
+    
+def get_inventory_item_ids(upc):
+    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={
+        'query': QUERY, 'variables': {'upc': upc}})
+    if response.status_code != 200:
+        print(f"Error fetching inventory item IDs for UPC {upc}: HTTP {response.status_code}")
+        return []
+
+    data = response.json()
+    edges = data.get('data', {}).get('productVariants', {}).get('edges', [])
+    return [edge['node']['inventoryItem']['id'] for edge in edges]
+
 
 
 def update_inventory(upc, quantity):
-    inventory_item_id = get_inventory_item_id(upc)
-    if not inventory_item_id:
-        print(
-            f"Unable to find inventory item ID for UPC {upc}. Skipping update.")
+    inventory_item_ids = get_inventory_item_ids(upc)
+    if not inventory_item_ids:
+        print(f"No inventory item IDs found for UPC {upc}. Skipping update.")
         missing_barcodes.append(upc)
         return
 
-    query = {
-        "input": {
-            "reason": "correction",
-            "referenceDocumentUri": f"logistics://update/{upc}",
-            "setQuantities": [
-                {
-                    "inventoryItemId": inventory_item_id,
-                    "locationId": LOCATION_ID,
-                    "quantity": quantity
-                }
-            ]
+    for inventory_item_id in inventory_item_ids:
+        query = {
+            "input": {
+                "reason": "correction",
+                "referenceDocumentUri": f"logistics://update/{upc}",
+                "setQuantities": [
+                    {
+                        "inventoryItemId": inventory_item_id,
+                        "locationId": LOCATION_ID,
+                        "quantity": quantity
+                    }
+                ]
+            }
         }
-    }
 
-    response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={
-                             'query': MUTATION, 'variables': query})
-    if response.status_code != 200:
-        print(
-            f"Error updating inventory for UPC {upc}: HTTP {response.status_code}")
-        return
+        response = requests.post(GRAPHQL_ENDPOINT, headers=HEADERS, json={
+            'query': MUTATION, 'variables': query})
+        if response.status_code != 200:
+            print(f"Error updating inventory for UPC {upc}: HTTP {response.status_code}")
+            continue
 
-    data = response.json()
-    inventory_set = data.get('data', {}).get(
-        'inventorySetOnHandQuantities', {})
-    user_errors = inventory_set.get('userErrors', [])
-    if user_errors:
-        for error in user_errors:
-            print(
-                f"Error updating inventory for UPC {upc}: {error['message']}")
-    else:
-        adjustment_group = inventory_set.get('inventoryAdjustmentGroup', {})
-        if adjustment_group:
-            print(f"Updated inventory for UPC {upc}:")
-            print(f"  Reason: {adjustment_group.get('reason')}")
-            print(
-                f"  Reference Document URI: {adjustment_group.get('referenceDocumentUri')}")
-            for change in adjustment_group.get('changes', []):
-                print(
-                    f"  Change: {change.get('name')}, Delta: {change.get('delta')}")
+        data = response.json()
+        inventory_set = data.get('data', {}).get('inventorySetOnHandQuantities', {})
+        user_errors = inventory_set.get('userErrors', [])
+        if user_errors:
+            for error in user_errors:
+                print(f"Error updating inventory for UPC {upc}: {error['message']}")
         else:
-            print(f"No adjustment group found in the response for UPC {upc}.")
+            # Reintroduce adjustment group logging
+            adjustment_group = inventory_set.get('inventoryAdjustmentGroup', {})
+            if adjustment_group:
+                print(f"Updated inventory for UPC {upc}:")
+                print(f"  Reason: {adjustment_group.get('reason')}")
+                print(f"  Reference Document URI: {adjustment_group.get('referenceDocumentUri')}")
+                for change in adjustment_group.get('changes', []):
+                    print(f"  Change: {change.get('name')}, Delta: {change.get('delta')}")
+            else:
+                print(f"No adjustment group found in the response for UPC {upc}.")
+
 
 
 def save_missing_barcodes():

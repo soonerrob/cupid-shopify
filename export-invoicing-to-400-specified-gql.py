@@ -30,12 +30,12 @@ DOMAIN = ''
 # Global variables
 POPULATE_TOTALS_ON_FIRST_ROW_ONLY = True
 ENABLE_TAGGING = False  # Control tagging functionality
-SMB_FILENAME = "CupidWebSales-70838.csv"  # Global filename
+SMB_FILENAME = "CupidWebSales-spec.csv"  # Global filename
 ORDER_TAG = "Invoicing"  # Global tag for invoicing
 
-# List of specific order names (IDs) to fetch
+# List of specific order names (IDs) to fetch. Example: ["#72868, #72869"]
 ORDER_NAMES = [
-    "#70838"
+    "#72686,"
 ]
 
 

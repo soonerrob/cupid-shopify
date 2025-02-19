@@ -47,6 +47,34 @@ PADDING_CHARACTER = ' '  # Character to use for padding
 EXCLUDED_TAG_PREFIXES = ["reship"]
 
 
+def is_holiday_today(holiday_file=None):
+    """
+    Checks if today's date matches any date in the holiday file.
+
+    Args:
+        holiday_file (str): Path to the file containing holiday dates.
+
+    Returns:
+        bool: True if today is a holiday, False otherwise.
+    """
+    if not holiday_file:
+        # Default to the same directory as the script
+        holiday_file = os.path.join(os.path.dirname(__file__), 'holidays.txt')
+
+    if not os.path.exists(holiday_file):
+        print(f"Holiday file '{holiday_file}' not found. Proceeding as usual.")
+        return False
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with open(holiday_file, 'r') as file:
+            holidays = [line.strip() for line in file if line.strip()]
+        return today in holidays
+    except Exception as e:
+        print(f"Error reading holiday file: {e}")
+        return False
+
+
 def should_exclude_order(order_tags):
     """
     Excludes orders that have tags starting with any of the specified prefixes.
@@ -254,9 +282,16 @@ def fetch_and_export_orders():
     Raises:
         Exception: If any errors occur during data retrieval or export.
     """
+
+    # Check if today is a holiday
+    if is_holiday_today():
+        print("Today is a holiday. Skipping execution.")
+        exit(0)  # Exit gracefully if it's a holiday
+
     all_orders = []
     cursor = None
     has_next_page = True
+    orders_to_tag = []
 
     while has_next_page:
         result = fetch_orders_from_graphql(cursor)
@@ -276,13 +311,19 @@ def fetch_and_export_orders():
 
         # Apply filters based on financial and fulfillment status
         if ENABLE_TAGGING:
-            if node['displayFinancialStatus'] != 'PAID' or node['displayFulfillmentStatus'] != 'UNFULFILLED':
-                continue  # Skip orders that don't meet the criteria
+            # Skip orders that aren't paid, are on hold, or are already fulfilled
+            if (node['displayFinancialStatus'] != 'PAID' or 
+                node['displayFulfillmentStatus'] == 'ON_HOLD' or 
+                node['displayFulfillmentStatus'] != 'UNFULFILLED'):
+                # print(f"Order {node['name']} skipped - Status: {node['displayFinancialStatus']}, Fulfillment: {node['displayFulfillmentStatus']}")
+                continue
 
             if ORDER_TAG in node.get('tags', []):
                 print(
                     f"Order {node['name']} already has the tag '{ORDER_TAG}', skipping.")
                 continue
+            
+            orders_to_tag.append(node)
 
         first_row = True
 
@@ -385,20 +426,39 @@ def fetch_and_export_orders():
         'Duties', 'Transaction Fee'
     ]
 
-    csv_content = df.to_csv(index=False, columns=column_order,
-                            lineterminator='\n', encoding='utf-8')
-    save_to_smb(csv_content, SERVER_NAME, SHARE_NAME,
-                SMB_FILENAME, USERNAME, PASSWORD, DOMAIN)
+    try:
+        # Generate CSV content
+        csv_content = df.to_csv(index=False, columns=column_order,
+                                lineterminator='\n', encoding='utf-8')
+        
+        # Try to save to SMB first
+        save_to_smb(csv_content, SERVER_NAME, SHARE_NAME,
+                    SMB_FILENAME, USERNAME, PASSWORD, DOMAIN)
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    local_filename = f"orders-for-invoicing-{timestamp}.csv"
-    local_export_path = os.path.join(EXPORT_DIR, local_filename)
+        # If SMB save is successful, save locally
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        local_filename = f"orders-for-invoicing-{timestamp}.csv"
+        local_export_path = os.path.join(EXPORT_DIR, local_filename)
 
-    with open(local_export_path, 'w', newline='') as f:
-        f.write(csv_content)
+        with open(local_export_path, 'w', newline='') as f:
+            f.write(csv_content)
 
-    print(f"Orders exported successfully to {local_export_path}")
+        print(f"Orders exported successfully to {local_export_path}")
 
+        # Only tag orders if all exports were successful
+        if ENABLE_TAGGING:
+            for order in orders_to_tag:
+                add_tag_to_order(order, ORDER_TAG)
+            print(f"Successfully tagged {len(orders_to_tag)} orders")
+
+    except Exception as e:
+        print(f"Error during export process: {e}")
+        raise  # Re-raise the exception to ensure the script exits with an error
 
 # Run the script to fetch and export orders
-fetch_and_export_orders()
+if __name__ == "__main__":
+    try:
+        fetch_and_export_orders()
+    except Exception as e:
+        print(f"Script failed with error: {e}")
+        exit(1)  # Ensure non-zero exit code on failure
